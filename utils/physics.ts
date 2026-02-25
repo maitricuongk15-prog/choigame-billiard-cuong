@@ -198,6 +198,8 @@ export const predictTargetBallPath = (
   contactY: number;
   targetVx: number;
   targetVy: number;
+  cueVx: number;
+  cueVy: number;
 } | null => {
   const aimDx = aimX - cueBallX;
   const aimDy = aimY - cueBallY;
@@ -210,8 +212,6 @@ export const predictTargetBallPath = (
 
   const toBallX = targetBall.x - cueBallX;
   const toBallY = targetBall.y - cueBallY;
-  const distanceToBall = Math.sqrt(toBallX * toBallX + toBallY * toBallY);
-
   const projection = toBallX * aimUnitX + toBallY * aimUnitY;
 
   if (projection < 0) return null;
@@ -223,25 +223,56 @@ export const predictTargetBallPath = (
   if (perpDistance > BALL_RADIUS * 2) return null;
 
   const sqrtArg = (BALL_RADIUS * 2) ** 2 - perpDistance ** 2;
-  if (sqrtArg < 0) return null; // Tránh sqrt âm khi perpDistance ≈ 2R (grazing)
+  if (sqrtArg < 0) return null;
+
   const contactDistance = projection - Math.sqrt(sqrtArg);
   const contactX = cueBallX + aimUnitX * contactDistance;
   const contactY = cueBallY + aimUnitY * contactDistance;
 
-  // contactX/Y = tâm bi cơ tại va chạm. Đường nối tâm = targetBall - contact (khớp resolveCollision)
   const targetDx = targetBall.x - contactX;
   const targetDy = targetBall.y - contactY;
   const targetDist = Math.sqrt(targetDx * targetDx + targetDy * targetDy);
   if (targetDist < 1e-6) return null;
 
-  const targetVx = targetDx / targetDist;
-  const targetVy = targetDy / targetDist;
+  const nx = targetDx / targetDist;
+  const ny = targetDy / targetDist;
+
+  // Use the same collision resolver as real gameplay for prediction consistency.
+  const virtualCue: Ball = {
+    id: 0,
+    x: contactX,
+    y: contactY,
+    vx: aimUnitX,
+    vy: aimUnitY,
+    color: "#ffffff",
+    isPocketed: false,
+  };
+  const virtualTarget: Ball = {
+    id: targetBall.id,
+    x: contactX + nx * BALL_RADIUS * 2,
+    y: contactY + ny * BALL_RADIUS * 2,
+    vx: 0,
+    vy: 0,
+    color: targetBall.color,
+    isPocketed: false,
+    isStriped: targetBall.isStriped,
+  };
+  resolveCollision(virtualCue, virtualTarget);
+
+  const targetSpeed = Math.hypot(virtualTarget.vx, virtualTarget.vy);
+  const cueSpeed = Math.hypot(virtualCue.vx, virtualCue.vy);
+  const targetVx = targetSpeed > 1e-6 ? virtualTarget.vx / targetSpeed : nx;
+  const targetVy = targetSpeed > 1e-6 ? virtualTarget.vy / targetSpeed : ny;
+  const cueVx = cueSpeed > 1e-6 ? virtualCue.vx / cueSpeed : aimUnitX;
+  const cueVy = cueSpeed > 1e-6 ? virtualCue.vy / cueSpeed : aimUnitY;
 
   return {
     contactX,
     contactY,
     targetVx,
     targetVy,
+    cueVx,
+    cueVy,
   };
 };
 

@@ -14,6 +14,7 @@ interface UseAimControlProps {
   onShoot: (angle: number, power: number) => void;
   /** Khi false = không tới lượt → không cho ngắm / kéo lực */
   canPlay?: boolean;
+  sliderHeight?: number;
 }
 
 export const useAimControl = ({
@@ -21,6 +22,7 @@ export const useAimControl = ({
   cueBall,
   onShoot,
   canPlay = true,
+  sliderHeight = GAME_CONFIG.SLIDER_HEIGHT,
 }: UseAimControlProps) => {
   const [aimAngle, setAimAngle] = useState<number>(0);
   const [power, setPower] = useState<number>(GAME_CONFIG.DEFAULT_POWER);
@@ -74,7 +76,7 @@ export const useAimControl = ({
 
   const updatePowerFromTouch = (event: any) => {
     const { touchY } = getTouchCoordinates(event);
-    const calculatedPower = calculatePowerFromTouch(touchY);
+    const calculatedPower = calculatePowerFromTouch(touchY, sliderHeight);
     setPower(calculatedPower);
   };
 

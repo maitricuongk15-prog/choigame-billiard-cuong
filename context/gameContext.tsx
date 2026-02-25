@@ -9,6 +9,7 @@ export interface RoomConfig {
   password?: string;
   gameMode: GameMode;
   playerCount: PlayerCount;
+  betAmount: number;
   isRanked: boolean;
 }
 

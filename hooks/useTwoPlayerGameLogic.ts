@@ -1,6 +1,6 @@
 // hooks/useTwoPlayerGameLogic.ts - PHẦN 1/2
 import { useState, useEffect, useRef } from "react";
-import { initialBalls } from "../constants/billiard";
+import { getInitialBallsByMode } from "../constants/billiard";
 import {
   GAME_CONFIG,
   GAME_MESSAGES,
@@ -19,17 +19,21 @@ import {
 } from "../utils/physics";
 import { clearPredictionCache } from "../utils/predictionHelpers";
 import type { Player, GameState, BallType } from "../types/player";
+import type { GameMode } from "../context/gameContext";
 
-// Payload đồng bộ multiplayer (host → guest)
 export interface SerializedGameState {
   balls: Ball[];
   gameState: GameState;
   message: string;
   ballInHand: boolean;
   ballInHandPlaced: boolean;
+  pushOutAvailableFor: 1 | 2 | null;
+  pushOutDecisionPending: {
+    decider: 1 | 2;
+    shooter: 1 | 2;
+  } | null;
 }
 
-// ✅ Interface cho Game Result
 export interface GameResult {
   winner: {
     id: number;
@@ -48,7 +52,7 @@ export interface GameResult {
   gameStats: {
     totalTurns: number;
     duration: string;
-    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win";
+    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win" | "ball9_win" | "carom_win";
   };
 }
 
@@ -69,8 +73,14 @@ const initialPlayers: [Player, Player] = [
   },
 ];
 
-export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResult) => void }) => {
-  const [balls, setBalls] = useState<Ball[]>(initialBalls);
+export const useTwoPlayerGameLogic = (options?: {
+  onGameOver?: (result: GameResult) => void;
+  gameMode?: GameMode;
+}) => {
+  const mode = options?.gameMode ?? "8ball";
+  const isNineBallMode = mode === "9ball";
+  const isThreeCushionMode = mode === "3cushion";
+  const [balls, setBalls] = useState<Ball[]>(getInitialBallsByMode(mode));
   const [gameState, setGameState] = useState<GameState>({
     currentPlayer: 1,
     players: initialPlayers,
@@ -80,8 +90,12 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
   const [message, setMessage] = useState<string>(GAME_MESSAGES.BREAK_SHOT);
   const [ballInHand, setBallInHand] = useState(false);
   const [ballInHandPlaced, setBallInHandPlaced] = useState(false);
+  const [pushOutAvailableFor, setPushOutAvailableFor] = useState<1 | 2 | null>(null);
+  const [pushOutDecisionPending, setPushOutDecisionPending] = useState<{
+    decider: 1 | 2;
+    shooter: 1 | 2;
+  } | null>(null);
 
-  // ✅ State cho game result
   const [showGameResult, setShowGameResult] = useState(false);
   const [gameResult, setGameResult] = useState<GameResult | null>(null);
   const [gameStartTime] = useState(Date.now());
@@ -90,17 +104,62 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
   const ballsPocketedThisTurn = useRef<Set<number>>(new Set());
   const cueBallPocketed = useRef(false);
   const firstBallHit = useRef<Ball | null>(null);
+  const requiredFirstBallId = useRef<number | null>(1);
+  const currentShotIsPushOut = useRef(false);
   const hasShot = useRef(false);
   const isProcessingTurn = useRef(false);
   const ballsTouchedCushion = useRef(false);
+  const ballsTouchedCushionIds = useRef<Set<number>>(new Set());
   const turnPhase = useRef<"break" | "open" | "determined">("break");
   const turnCounter = useRef(0);
   const ballsPocketedCount = useRef<{ player1: number; player2: number }>({
     player1: 0,
     player2: 0,
   });
+  const caromHitOrder = useRef<number[]>([]);
+  const caromCueCushionCount = useRef(0);
+  const caromCushionsBeforeSecondHit = useRef(0);
 
-  // ✅ Hàm tính thời gian game
+  const getLowestBallIdOnTable = (currentBalls: Ball[]): number | null => {
+    const remaining = currentBalls
+      .filter((b) => b.id > 0 && !b.isPocketed)
+      .map((b) => b.id);
+    if (!remaining.length) return null;
+    return Math.min(...remaining);
+  };
+
+  const spotNineBall = () => {
+    setBalls((prev) => {
+      const next = prev.map((b) => ({ ...b }));
+      const nineIndex = next.findIndex((b) => b.id === 9);
+      if (nineIndex === -1) return prev;
+
+      const startX = 370;
+      const startY = 175;
+      let spotX = startX;
+      const step = BALL_RADIUS * 2 + 1;
+
+      const wouldCollide = (x: number) =>
+        next.some(
+          (b, idx) =>
+            idx !== nineIndex &&
+            !b.isPocketed &&
+            Math.hypot(b.x - x, b.y - startY) < BALL_RADIUS * 2
+        );
+
+      while (wouldCollide(spotX) && spotX <= TABLE_WIDTH - BALL_RADIUS - 10) {
+        spotX += step;
+      }
+
+      next[nineIndex].isPocketed = false;
+      next[nineIndex].x = spotX;
+      next[nineIndex].y = startY;
+      next[nineIndex].vx = 0;
+      next[nineIndex].vy = 0;
+      return next;
+    });
+  };
+
   const getGameDuration = (): string => {
     const duration = Math.floor((Date.now() - gameStartTime) / 1000);
     const minutes = Math.floor(duration / 60);
@@ -108,10 +167,9 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
-  // ✅ Hàm kết thúc game
   const endGame = (
     winnerId: number,
-    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win",
+    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win" | "ball9_win" | "carom_win",
   ) => {
     const winnerIndex = winnerId - 1;
     const loserIndex = winnerIndex === 0 ? 1 : 0;
@@ -152,78 +210,105 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     options?.onGameOver?.(result);
   };
 
+  const getPhysicsSubsteps = (currentBalls: Ball[]): number => {
+    const maxSpeed = currentBalls.reduce((max, ball) => {
+      if (ball.isPocketed) return max;
+      const speed = Math.hypot(ball.vx, ball.vy);
+      return speed > max ? speed : max;
+    }, 0);
+    if (maxSpeed <= BALL_RADIUS * 0.45) return 1;
+    return Math.min(8, Math.max(1, Math.ceil(maxSpeed / (BALL_RADIUS * 0.45))));
+  };
+
   /* ================= GAME LOOP ================= */
   useEffect(() => {
     const updateGame = () => {
       setBalls((prev) => {
-        const next = prev.map((b) =>
-          b.isPocketed ? b : { ...b, x: b.x + b.vx, y: b.y + b.vy },
-        );
+        const next = prev.map((b) => ({ ...b }));
+        const substeps = getPhysicsSubsteps(next);
+        const dt = 1 / substeps;
 
-        next.forEach(applyFriction);
+        for (let step = 0; step < substeps; step++) {
+          next.forEach((ball) => {
+            if (ball.isPocketed) return;
+            ball.x += ball.vx * dt;
+            ball.y += ball.vy * dt;
+          });
 
-        // ✅ KIỂM TRA POCKET TRƯỚC COLLISION
-        next.forEach((ball) => {
-          if (!ball.isPocketed) {
-            const pocket = checkPocket(ball);
-            if (pocket) {
-              ball.isPocketed = true;
-              ball.vx = 0;
-              ball.vy = 0;
-              ball.x = pocket.x;
-              ball.y = pocket.y;
+          if (!isThreeCushionMode) {
+            next.forEach((ball) => {
+              if (!ball.isPocketed) {
+                const pocket = checkPocket(ball);
+                if (pocket) {
+                  ball.isPocketed = true;
+                  ball.vx = 0;
+                  ball.vy = 0;
+                  ball.x = pocket.x;
+                  ball.y = pocket.y;
 
-              if (ball.id === 0) {
-                cueBallPocketed.current = true;
-                console.log("[CUE BALL POCKETED]");
-              } else if (hasShot.current) {
-                ballsPocketedThisTurn.current.add(ball.id);
-                console.log(
-                  `[BALL POCKETED] Id: ${ball.id}, Total: ${ballsPocketedThisTurn.current.size}`,
-                );
-              }
-            }
-          }
-        });
-
-        // ✅ KIỂM TRA COLLISION (CHỈ KHI KHÔNG PHẢI BALL IN HAND)
-        if (!ballInHand) {
-          for (let i = 0; i < next.length; i++) {
-            for (let j = i + 1; j < next.length; j++) {
-              if (!next[i].isPocketed && !next[j].isPocketed) {
-                if (checkCollision(next[i], next[j])) {
-                  if (
-                    (next[i].id === 0 || next[j].id === 0) &&
-                    !firstBallHit.current &&
-                    hasShot.current
-                  ) {
-                    const hitBall = next[i].id === 0 ? next[j] : next[i];
-                    firstBallHit.current = hitBall;
+                  if (ball.id === 0) {
+                    cueBallPocketed.current = true;
+                    console.log("[CUE BALL POCKETED]");
+                  } else if (hasShot.current) {
+                    ballsPocketedThisTurn.current.add(ball.id);
                     console.log(
-                      `[FIRST BALL HIT] Id: ${hitBall.id}, Type: ${hitBall.isStriped ? "striped" : "solid"}`,
+                      `[BALL POCKETED] Id: ${ball.id}, Total: ${ballsPocketedThisTurn.current.size}`,
                     );
                   }
-                  resolveCollision(next[i], next[j]);
+                }
+              }
+            });
+          }
+
+          if (!ballInHand) {
+            for (let i = 0; i < next.length; i++) {
+              for (let j = i + 1; j < next.length; j++) {
+                if (!next[i].isPocketed && !next[j].isPocketed) {
+                  if (checkCollision(next[i], next[j])) {
+                    if (next[i].id === 0 || next[j].id === 0) {
+                      const hitBall = next[i].id === 0 ? next[j] : next[i];
+                      if (!firstBallHit.current && hasShot.current) {
+                        firstBallHit.current = hitBall;
+                        console.log(
+                          `[FIRST BALL HIT] Id: ${hitBall.id}, Type: ${hitBall.isStriped ? "striped" : "solid"}`,
+                        );
+                      }
+                      if (isThreeCushionMode && hasShot.current && hitBall.id !== 0) {
+                        const alreadyHit = caromHitOrder.current.includes(hitBall.id);
+                        if (!alreadyHit) {
+                          caromHitOrder.current.push(hitBall.id);
+                          if (caromHitOrder.current.length === 2) {
+                            caromCushionsBeforeSecondHit.current =
+                              caromCueCushionCount.current;
+                          }
+                        }
+                      }
+                    }
+                    resolveCollision(next[i], next[j]);
+                  }
+                }
+              }
+
+              const hitWall = checkWallCollision(next[i]);
+              if (hitWall && hasShot.current) {
+                ballsTouchedCushion.current = true;
+                ballsTouchedCushionIds.current.add(next[i].id);
+                if (isThreeCushionMode && next[i].id === 0) {
+                  caromCueCushionCount.current += 1;
                 }
               }
             }
-
-            const hitWall = checkWallCollision(next[i]);
-            if (hitWall && hasShot.current) {
-              ballsTouchedCushion.current = true;
-            }
-          }
-        } else {
-          // ✅ BALL IN HAND: Chỉ xử lý tường
-          for (let i = 0; i < next.length; i++) {
-            if (next[i].id !== 0 || !ballInHand) {
+          } else {
+            for (let i = 0; i < next.length; i++) {
               if (next[i].id !== 0) {
                 checkWallCollision(next[i]);
               }
             }
+            checkWallCollision(next[0]);
           }
-          checkWallCollision(next[0]);
         }
+
+        next.forEach(applyFriction);
 
         return next;
       });
@@ -235,7 +320,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     return () => {
       if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
     };
-  }, [ballInHand]);
+  }, [ballInHand, isThreeCushionMode]);
 
   /* ================= END TURN CHECK ================= */
   useEffect(() => {
@@ -266,7 +351,6 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     }
   }, [balls, ballInHand]);
 
-  // ⚠️ TIẾP TỤC Ở PHẦN 2/2// hooks/useTwoPlayerGameLogic.ts - PHẦN 2/2 (TIẾP TỤC TỪ PHẦN 1)
 
   /* ================= END TURN ================= */
   const endTurn = (currentBalls: Ball[]) => {
@@ -281,7 +365,6 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
         b.isPocketed && b.id !== 0 && ballsPocketedThisTurn.current.has(b.id),
     );
 
-    // ✅ Cập nhật số bi vào lỗ
     if (pocketedBalls.length > 0) {
       ballsPocketedCount.current[
         `player${currentPlayer.id}` as keyof typeof ballsPocketedCount.current
@@ -296,7 +379,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     let messageText = "";
     let gameOver = false;
     let winner: number | null = null;
-    let winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win" =
+    let winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win" | "ball9_win" | "carom_win" =
       "normal";
     let givesBallInHand = false;
     let newPhase = turnPhase.current;
@@ -317,6 +400,199 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
         color: gameState.players[1].color,
       },
     ];
+
+    if (isThreeCushionMode) {
+      const currentPlayerId = gameState.currentPlayer as 1 | 2;
+      const opponentPlayerId = (currentPlayerId === 1 ? 2 : 1) as 1 | 2;
+      const hasTwoTargetHits = caromHitOrder.current.length >= 2;
+      const cushionsBeforeSecondHit = caromCushionsBeforeSecondHit.current;
+      const isValidCarom = hasTwoTargetHits && cushionsBeforeSecondHit >= 3;
+      let nextPlayerId = currentPlayerId;
+
+      if (isValidCarom) {
+        newPlayers[currentIndex].score += GAME_CONFIG.POINTS_PER_BALL;
+        const newScore = newPlayers[currentIndex].score;
+        if (newScore >= GAME_CONFIG.THREE_CUSHION_TARGET_POINTS) {
+          gameOver = true;
+          winner = currentPlayerId;
+          winReason = "carom_win";
+          messageText = "Đủ điểm 3 băng. Thắng trận.";
+        } else {
+          messageText = `Carom hợp lệ (+${GAME_CONFIG.POINTS_PER_BALL}). Tiếp tục lượt.`;
+        }
+      } else {
+        shouldChangeTurn = true;
+        nextPlayerId = opponentPlayerId;
+        messageText = !hasTwoTargetHits
+          ? "Chưa chạm đủ 2 bi mục tiêu. Đổi lượt."
+          : "Chưa đủ 3 băng trước khi chạm bi thứ hai. Đổi lượt.";
+      }
+
+      if (gameOver && winner) {
+        endGame(winner, winReason);
+      } else {
+        setGameState((prevState) => ({
+          ...prevState,
+          players: newPlayers,
+          currentPlayer: shouldChangeTurn ? nextPlayerId : currentPlayerId,
+          isBreak: false,
+          turnEnded: false,
+        }));
+        setBallInHand(false);
+        setBallInHandPlaced(false);
+        setPushOutAvailableFor(null);
+        setPushOutDecisionPending(null);
+        setMessage(messageText);
+        setTimeout(() => setMessage(""), 2500);
+      }
+
+      ballsPocketedThisTurn.current.clear();
+      cueBallPocketed.current = false;
+      firstBallHit.current = null;
+      hasShot.current = false;
+      isProcessingTurn.current = false;
+      ballsTouchedCushion.current = false;
+      ballsTouchedCushionIds.current.clear();
+      currentShotIsPushOut.current = false;
+      requiredFirstBallId.current = 1;
+      caromHitOrder.current = [];
+      caromCueCushionCount.current = 0;
+      caromCushionsBeforeSecondHit.current = 0;
+      return;
+    }
+
+    if (isNineBallMode) {
+      const hit = firstBallHit.current;
+      const requiredBallId =
+        requiredFirstBallId.current ?? getLowestBallIdOnTable(currentBalls);
+      const cushionTouches = ballsTouchedCushionIds.current.size;
+      const ball9Pocketed = pocketedBalls.some((b) => b.id === 9);
+      const pocketedCount = pocketedBalls.filter((b) => b.id !== 9).length;
+      const currentPlayerId = gameState.currentPlayer as 1 | 2;
+      const opponentPlayerId = (currentPlayerId === 1 ? 2 : 1) as 1 | 2;
+      let nextPlayerId = currentPlayerId;
+      let nextPushOutAvailableFor: 1 | 2 | null = null;
+      let nextPushOutDecision: { decider: 1 | 2; shooter: 1 | 2 } | null = null;
+
+      if (pocketedCount > 0) {
+        newPlayers[currentIndex].score +=
+          pocketedCount * GAME_CONFIG.POINTS_PER_BALL;
+      }
+
+      if (currentShotIsPushOut.current) {
+        if (cueBallPocketed.current) {
+          shouldChangeTurn = true;
+          givesBallInHand = true;
+          messageText = "Push-out lỗi: đối thủ được đặt bi tự do.";
+          if (ball9Pocketed) spotNineBall();
+        } else {
+          shouldChangeTurn = true;
+          givesBallInHand = false;
+          if (ball9Pocketed) spotNineBall();
+          nextPushOutDecision = {
+            decider: opponentPlayerId,
+            shooter: currentPlayerId,
+          };
+          messageText =
+            "Push-out hợp lệ. Đối thủ chọn Đánh tiếp hoặc Trả lượt.";
+        }
+      } else if (gameState.isBreak) {
+        const breakLegal =
+          !!hit &&
+          hit.id === 1 &&
+          !cueBallPocketed.current &&
+          (pocketedBalls.length > 0 || cushionTouches >= 4);
+
+        if (!breakLegal) {
+          shouldChangeTurn = true;
+          givesBallInHand = true;
+          messageText = "Phá bi không hợp lệ. Đối thủ được đặt bi tự do.";
+          if (ball9Pocketed) spotNineBall();
+        } else if (ball9Pocketed) {
+          gameOver = true;
+          winner = currentPlayerId;
+          winReason = "ball9_win";
+          newPlayers[currentIndex].score += 50;
+          messageText = "Vào bi 9 hợp lệ ở cú phá. Thắng ván.";
+        } else {
+          shouldChangeTurn = pocketedBalls.length === 0;
+          givesBallInHand = false;
+          nextPlayerId = shouldChangeTurn ? opponentPlayerId : currentPlayerId;
+          nextPushOutAvailableFor = nextPlayerId;
+          messageText = shouldChangeTurn
+            ? "Phá bi hợp lệ, đổi lượt."
+            : "Phá bi hợp lệ, tiếp tục lượt.";
+        }
+      } else {
+        const hasValidFirstContact = !!hit && hit.id === requiredBallId;
+        const hasRailOrPocket =
+          pocketedBalls.length > 0 || ballsTouchedCushionIds.current.size > 0;
+
+        if (!hasValidFirstContact) {
+          shouldChangeTurn = true;
+          givesBallInHand = true;
+          messageText = "Chưa chạm bi nhỏ nhất trước. Đối thủ được đặt bi tự do.";
+          if (ball9Pocketed) spotNineBall();
+        } else if (cueBallPocketed.current) {
+          shouldChangeTurn = true;
+          givesBallInHand = true;
+          messageText = "Bi trắng vào lỗ. Đối thủ được đặt bi tự do.";
+          if (ball9Pocketed) spotNineBall();
+        } else if (!hasRailOrPocket) {
+          shouldChangeTurn = true;
+          givesBallInHand = true;
+          messageText = "Không bi chạm băng/vào lỗ. Đối thủ đặt bi tự do.";
+          if (ball9Pocketed) spotNineBall();
+        } else if (ball9Pocketed) {
+          gameOver = true;
+          winner = currentPlayerId;
+          winReason = "ball9_win";
+          newPlayers[currentIndex].score += 50;
+          messageText = "Vào bi 9 hợp lệ. Thắng ván.";
+        } else {
+          shouldChangeTurn = pocketedBalls.length === 0;
+          givesBallInHand = false;
+          messageText = shouldChangeTurn
+            ? "Không vào bi, đổi lượt."
+            : "Vào bi hợp lệ, tiếp tục lượt.";
+        }
+      }
+
+      if (gameOver && winner) {
+        setPushOutAvailableFor(null);
+        setPushOutDecisionPending(null);
+        endGame(winner, winReason);
+      } else {
+        if (shouldChangeTurn) {
+          nextPlayerId = opponentPlayerId;
+        }
+        setGameState((prevState) => ({
+          ...prevState,
+          players: newPlayers,
+          currentPlayer: nextPlayerId,
+          isBreak: false,
+          turnEnded: false,
+        }));
+        setPushOutAvailableFor(nextPushOutAvailableFor);
+        setPushOutDecisionPending(nextPushOutDecision);
+        setBallInHand(givesBallInHand);
+        setBallInHandPlaced(false);
+        setMessage(messageText);
+        setTimeout(() => setMessage(""), 3000);
+      }
+
+      turnPhase.current = "determined";
+      ballsPocketedThisTurn.current.clear();
+      cueBallPocketed.current = false;
+      firstBallHit.current = null;
+      hasShot.current = false;
+      isProcessingTurn.current = false;
+      ballsTouchedCushion.current = false;
+      ballsTouchedCushionIds.current.clear();
+      currentShotIsPushOut.current = false;
+      requiredFirstBallId.current = getLowestBallIdOnTable(currentBalls);
+      return;
+    }
 
     const assignBallType = (type: BallType) => {
       newPlayers[currentIndex].ballType = type;
@@ -347,14 +623,13 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     console.log("currentPlayer ballType:", currentPlayer.ballType);
     console.log("======================");
 
-    /* BI 8 VÀO LỖ KHI CHƯA HẾT BI → THUA */
     if (ball8 && hasRemainingBalls(currentIndex)) {
       gameOver = true;
       winner = currentPlayer.id === 1 ? 2 : 1;
       winReason = "ball8_early";
       messageText = `🤖 ${currentPlayer.name} đánh bi 8 khi chưa hết bi - THUA!`;
     } else if (cueBallPocketed.current) {
-      /* BI TRẮNG VÀO LỖ */
+      /* BI TRáº®NG VĂ€O Lá»– */
       if (ball8) {
         gameOver = true;
         winner = currentPlayer.id === 1 ? 2 : 1;
@@ -376,7 +651,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
         });
       }
     } else if (gameState.isBreak) {
-      /* CỦ KHAI CUỘC */
+      /* CÚ KHAI CUỘC */
       if (ball8) {
         messageText = "⚫ Bi 8 vào lỗ khi khai cuộc! Đặt lại bi 8";
         shouldChangeTurn = false;
@@ -402,7 +677,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
         assignBallType("solid");
         newPlayers[currentIndex].score +=
           solids.length * GAME_CONFIG.POINTS_PER_BALL;
-        messageText = `🎯 ${currentPlayer.name} chọn BI MẦU (1-7)! +${solids.length * 10}Đ`;
+        messageText = `🎯 ${currentPlayer.name} chọn BI MÀU (1-7)! +${solids.length * 10}Đ`;
         shouldChangeTurn = false;
       } else if (stripes.length > 0 && solids.length === 0) {
         assignBallType("striped");
@@ -435,7 +710,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
           assignBallType("solid");
           newPlayers[currentIndex].score +=
             solids.length * GAME_CONFIG.POINTS_PER_BALL;
-          messageText = `🎯 ${currentPlayer.name} chọn BI MẦU (1-7)! +${solids.length * 10}Đ`;
+          messageText = `🎯 ${currentPlayer.name} chọn BI MÀU (1-7)! +${solids.length * 10}Đ`;
           shouldChangeTurn = false;
           console.log("[OPEN PHASE] Vô solid → xác định solid");
         } else if (stripes.length > 0 && solids.length === 0) {
@@ -458,7 +733,6 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
         console.log("[OPEN PHASE] Chạm bi nhưng không vô");
       }
     } else {
-      /* ĐÃ CÓ LOẠI BI */
       const hit = firstBallHit.current;
 
       const isCorrectBall = (ball: Ball): boolean => {
@@ -519,7 +793,6 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
       }
     }
 
-    // ✅ KIỂM TRA GAME OVER
     if (gameOver && winner) {
       endGame(winner, winReason);
     } else {
@@ -549,10 +822,21 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     hasShot.current = false;
     isProcessingTurn.current = false;
     ballsTouchedCushion.current = false;
+    ballsTouchedCushionIds.current.clear();
+    currentShotIsPushOut.current = false;
+    requiredFirstBallId.current = getLowestBallIdOnTable(currentBalls);
+    setPushOutAvailableFor(null);
+    setPushOutDecisionPending(null);
+    caromHitOrder.current = [];
+    caromCueCushionCount.current = 0;
+    caromCushionsBeforeSecondHit.current = 0;
   };
 
   const shootCueBall = (angle: number, power: number) => {
     if (ballInHand && !ballInHandPlaced) {
+      return;
+    }
+    if (pushOutDecisionPending) {
       return;
     }
 
@@ -562,6 +846,12 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     hasShot.current = false;
     isProcessingTurn.current = false;
     ballsTouchedCushion.current = false;
+    ballsTouchedCushionIds.current.clear();
+    requiredFirstBallId.current = getLowestBallIdOnTable(balls);
+    setPushOutAvailableFor(null);
+    caromHitOrder.current = [];
+    caromCueCushionCount.current = 0;
+    caromCushionsBeforeSecondHit.current = 0;
 
     setBalls((prev) => {
       const next = [...prev];
@@ -574,6 +864,7 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
 
     setBallInHand(false);
     setBallInHandPlaced(false);
+    setPushOutDecisionPending(null);
   };
 
   const setCueBallPosition = (x: number, y: number) => {
@@ -602,6 +893,8 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     message,
     ballInHand,
     ballInHandPlaced,
+    pushOutAvailableFor,
+    pushOutDecisionPending,
   });
 
   const applyRemoteState = (state: SerializedGameState) => {
@@ -618,13 +911,48 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     setMessage(state.message);
     setBallInHand(state.ballInHand);
     setBallInHandPlaced(state.ballInHandPlaced);
+    setPushOutAvailableFor(state.pushOutAvailableFor ?? null);
+    setPushOutDecisionPending(state.pushOutDecisionPending ?? null);
     hasShot.current = false;
     isProcessingTurn.current = false;
+    caromHitOrder.current = [];
+    caromCueCushionCount.current = 0;
+    caromCushionsBeforeSecondHit.current = 0;
   };
 
   const applyRemoteGameResult = (result: GameResult) => {
     setGameResult(result);
     setShowGameResult(true);
+  };
+
+  const declarePushOut = (): boolean => {
+    if (!isNineBallMode) return false;
+    if (pushOutAvailableFor !== gameState.currentPlayer) return false;
+    if (hasShot.current) return false;
+    currentShotIsPushOut.current = true;
+    setPushOutAvailableFor(null);
+    setMessage("Đã khai báo push-out.");
+    setTimeout(() => setMessage(""), 1800);
+    return true;
+  };
+
+  const choosePushOutDecision = (playFromHere: boolean) => {
+    if (!pushOutDecisionPending) return;
+    const { decider, shooter } = pushOutDecisionPending;
+    const nextPlayer = playFromHere ? decider : shooter;
+    setGameState((prev) => ({
+      ...prev,
+      currentPlayer: nextPlayer,
+    }));
+    setPushOutDecisionPending(null);
+    setBallInHand(false);
+    setBallInHandPlaced(false);
+    setMessage(
+      playFromHere
+        ? "Đối thủ nhận đánh tiếp từ vị trí push-out."
+        : "Đối thủ trả lượt cho người push-out."
+    );
+    setTimeout(() => setMessage(""), 2200);
   };
 
   const moveCueBall = (x: number, y: number) => {
@@ -666,6 +994,16 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
   };
 
   const canShowPrediction = (aimedBall: Ball | null) => {
+    if (isThreeCushionMode) {
+      return !!aimedBall && aimedBall.id !== 0;
+    }
+
+    if (isNineBallMode) {
+      if (!aimedBall || aimedBall.id === 0) return false;
+      const lowest = getLowestBallIdOnTable(balls);
+      return lowest != null && aimedBall.id === lowest;
+    }
+
     const currentPlayer = gameState.players[gameState.currentPlayer - 1];
     if (!aimedBall || aimedBall.id === 0) return false;
 
@@ -681,6 +1019,17 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
   };
 
   const isWrongBall = (aimedBall: Ball | null): boolean => {
+    if (isThreeCushionMode) {
+      return false;
+    }
+
+    if (isNineBallMode) {
+      if (!aimedBall || aimedBall.id === 0) return false;
+      const lowest = getLowestBallIdOnTable(balls);
+      if (lowest == null) return false;
+      return aimedBall.id !== lowest;
+    }
+
     if (!aimedBall || aimedBall.id === 0) return false;
 
     const currentPlayer = gameState.players[gameState.currentPlayer - 1];
@@ -724,14 +1073,23 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
       ...prev,
       currentPlayer: prev.currentPlayer === 1 ? 2 : 1,
     }));
-    setBallInHand(true);
+    setBallInHand(isThreeCushionMode ? false : true);
     setBallInHandPlaced(false);
-    setMessage("⏱ Hết giờ! Đổi lượt. Đối thủ có ball in hand");
+    setPushOutAvailableFor(null);
+    setPushOutDecisionPending(null);
+    setMessage(
+      isThreeCushionMode
+        ? "⏱ Hết giờ! Đổi lượt."
+        : "⏱ Hết giờ! Đổi lượt. Đối thủ có ball in hand"
+    );
     setTimeout(() => setMessage(""), 3000);
+    caromHitOrder.current = [];
+    caromCueCushionCount.current = 0;
+    caromCushionsBeforeSecondHit.current = 0;
   };
 
   const resetGame = () => {
-    setBalls(initialBalls);
+    setBalls(getInitialBallsByMode(mode));
     const randomFirstPlayer = (Math.random() < 0.5 ? 1 : 2) as 1 | 2;
     setGameState({
       currentPlayer: randomFirstPlayer,
@@ -740,10 +1098,14 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
       turnEnded: false,
     });
     setMessage(
-      `🎱 Phá bi! ${initialPlayers[randomFirstPlayer - 1].name} đánh trước`,
+      isThreeCushionMode
+        ? `3 băng: ${initialPlayers[randomFirstPlayer - 1].name} đánh trước`
+        : `🎱 Phá bi! ${initialPlayers[randomFirstPlayer - 1].name} đánh trước`,
     );
     setBallInHand(false);
     setBallInHandPlaced(false);
+    setPushOutAvailableFor(null);
+    setPushOutDecisionPending(null);
     setShowGameResult(false);
     setGameResult(null);
 
@@ -753,9 +1115,15 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     hasShot.current = false;
     isProcessingTurn.current = false;
     ballsTouchedCushion.current = false;
+    ballsTouchedCushionIds.current.clear();
+    currentShotIsPushOut.current = false;
+    requiredFirstBallId.current = 1;
     turnPhase.current = "break";
     turnCounter.current = 0;
     ballsPocketedCount.current = { player1: 0, player2: 0 };
+    caromHitOrder.current = [];
+    caromCueCushionCount.current = 0;
+    caromCushionsBeforeSecondHit.current = 0;
 
     clearPredictionCache();
   };
@@ -766,6 +1134,8 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     message,
     ballInHand,
     ballInHandPlaced,
+    pushOutAvailableFor,
+    pushOutDecisionPending,
     shootCueBall,
     moveCueBall,
     resetGame,
@@ -776,6 +1146,8 @@ export const useTwoPlayerGameLogic = (options?: { onGameOver?: (result: GameResu
     setShowGameResult,
     handleForfeit,
     forceSwitchTurn,
+    declarePushOut,
+    choosePushOutDecision,
     // Multiplayer sync
     getStateSnapshot,
     applyRemoteState,

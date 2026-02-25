@@ -1,5 +1,5 @@
 // app/waiting-room.tsx - PHÒNG CHỜ THẬT (SUPABASE + REALTIME)
-import React, { useState, useEffect, useRef } from "react";
+import React, { useCallback, useState, useEffect, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -10,6 +10,8 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
+  Image,
+  Modal,
 } from "react-native";
 import { router } from "expo-router";
 import { useGameContext } from "../context/gameContext";
@@ -21,7 +23,13 @@ import {
   leaveRoom,
   startMatch,
 } from "../services/roomService";
+import {
+  listInvitablePlayers,
+  sendRoomInvite,
+  type InvitablePlayer,
+} from "../services/friendService";
 import type { RoomWithPlayers } from "../types/room";
+import { getAvatarEmoji, normalizeAvatarUrl } from "../utils/avatar";
 
 export default function WaitingRoomScreen() {
   const { roomId, roomCode, roomConfig, setRoomId, setRoomCode, setRoomConfig, setRoomHostId, setPlayerNames } = useGameContext();
@@ -32,6 +40,12 @@ export default function WaitingRoomScreen() {
   const [error, setError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<{ id: number; playerName: string; avatar: string; message: string; time: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [inviteModalVisible, setInviteModalVisible] = useState(false);
+  const [invitablePlayers, setInvitablePlayers] = useState<InvitablePlayer[]>([]);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteSubmittingUserId, setInviteSubmittingUserId] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteInfo, setInviteInfo] = useState<string | null>(null);
   const chatScrollRef = useRef<ScrollView>(null);
 
   const currentUserId = user?.id ?? null;
@@ -43,18 +57,65 @@ export default function WaitingRoomScreen() {
   const playerCount = room?.room_players?.length ?? 0;
   const maxPlayers = room?.player_count ?? roomConfig?.playerCount ?? 2;
 
+  const resetRoomAndGoLobby = useCallback(() => {
+    setRoomId(null);
+    setRoomCode(null);
+    setRoomConfig(null);
+    setRoomHostId(null);
+    router.replace("/");
+  }, [setRoomCode, setRoomConfig, setRoomHostId, setRoomId]);
+
   const loadRoom = async (id: string) => {
     setLoading(true);
     setError(null);
     const { room: r, error: err } = await getRoomById(id);
     setLoading(false);
     if (err) {
+      const msg = (err.message || "").toLowerCase();
+      const roomGone =
+        msg.includes("no rows") ||
+        msg.includes("not found") ||
+        msg.includes("không tìm thấy") ||
+        msg.includes("khong tim thay");
+      if (roomGone) {
+        resetRoomAndGoLobby();
+        return;
+      }
       setError(err.message);
       setRoom(null);
       return;
     }
+
+    if (!r) {
+      resetRoomAndGoLobby();
+      return;
+    }
+
+    const isStillInRoom = r.room_players?.some((p) => String(p.user_id) === String(currentUserId));
+    if (!isStillInRoom) {
+      resetRoomAndGoLobby();
+      return;
+    }
+
     setRoom(r ?? null);
     if (r?.host_id) setRoomHostId(r.host_id);
+    if (r) {
+      const normalizedGameMode = (
+        r.game_mode === "9ball" ||
+        r.game_mode === "3cushion" ||
+        r.game_mode === "ai"
+          ? r.game_mode
+          : "8ball"
+      ) as "8ball" | "9ball" | "3cushion" | "ai";
+      setRoomConfig({
+        roomName: r.name,
+        password: roomConfig?.password,
+        gameMode: normalizedGameMode,
+        playerCount: r.player_count === 4 ? 4 : 2,
+        betAmount: Number(r.bet_amount ?? 0),
+        isRanked: roomConfig?.isRanked ?? false,
+      });
+    }
     // Lưu tên người chơi theo slot (slot 1 = Player 1, slot 2 = Player 2) để hiển thị trên màn hình kết quả
     if (r?.room_players?.length) {
       const p1 = r.room_players.find((rp) => rp.slot === 1);
@@ -70,7 +131,7 @@ export default function WaitingRoomScreen() {
       router.replace("/");
       return;
     }
-    loadRoom(roomId);
+    void loadRoom(roomId);
   }, [roomId, currentUserId]);
 
   useEffect(() => {
@@ -80,15 +141,23 @@ export default function WaitingRoomScreen() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_players", filter: `room_id=eq.${roomId}` },
-        () => loadRoom(roomId)
+        () => void loadRoom(roomId)
       )
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
+        { event: "*", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
         (payload) => {
-          const r = payload.new as { status: string };
+          if (payload.eventType === "DELETE") {
+            resetRoomAndGoLobby();
+            return;
+          }
+          const r = payload.new as { status?: string } | null;
           if (r?.status === "playing") {
             router.replace("/explore");
+            return;
+          }
+          if (r?.status === "finished") {
+            resetRoomAndGoLobby();
           }
         }
       )
@@ -97,7 +166,15 @@ export default function WaitingRoomScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [roomId]);
+  }, [roomId, resetRoomAndGoLobby]);
+
+  useEffect(() => {
+    if (!roomId) return;
+    const intervalId = setInterval(() => {
+      void loadRoom(roomId);
+    }, 4000);
+    return () => clearInterval(intervalId);
+  }, [roomId, currentUserId]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
@@ -115,7 +192,7 @@ export default function WaitingRoomScreen() {
   const handleStartMatch = async () => {
     if (!roomId || !isHost) return;
     if (!allPlayersReady || playerCount < 2) {
-      Alert.alert("Chưa sẵn sàng", "Cần ít nhất 2 người và tất cả đều Ready.");
+      Alert.alert("Chưa sẵn sàng", "Cần ít nhất 2 người và tất cả đều đã sẵn sàng.");
       return;
     }
     const { error: err } = await startMatch(roomId);
@@ -132,15 +209,16 @@ export default function WaitingRoomScreen() {
       return;
     }
     await leaveRoom(roomId);
-    setRoomId(null);
-    setRoomCode(null);
-    setRoomConfig(null);
-    router.replace("/");
+    resetRoomAndGoLobby();
   };
 
   const handleSendMessage = () => {
     if (!chatInput.trim()) return;
-    const name = room?.room_players?.find((p) => p.user_id === currentUserId)?.profiles?.display_name || user?.email?.split("@")[0] || "You";
+    const name =
+      room?.room_players?.find((p) => p.user_id === currentUserId)?.profiles
+        ?.display_name ||
+      user?.email?.split("@")[0] ||
+      "Bạn";
     setChatMessages((prev) => [
       ...prev,
       {
@@ -152,6 +230,54 @@ export default function WaitingRoomScreen() {
       },
     ]);
     setChatInput("");
+  };
+
+  const loadInvitableList = async () => {
+    if (!roomId) return;
+    setInviteLoading(true);
+    setInviteError(null);
+    const { players, error: err } = await listInvitablePlayers(roomId, 40);
+    setInviteLoading(false);
+    if (err) {
+      setInvitablePlayers([]);
+      setInviteError(err.message);
+      return;
+    }
+    setInvitablePlayers(players);
+  };
+
+  const handleOpenInviteModal = () => {
+    setInviteModalVisible(true);
+    setInviteInfo(null);
+    void loadInvitableList();
+  };
+
+  const handleSendInvite = async (player: InvitablePlayer) => {
+    if (!roomId) return;
+    setInviteSubmittingUserId(player.user_id);
+    setInviteError(null);
+    setInviteInfo(null);
+
+    const { error: err, alreadyInRoom, alreadyPending } = await sendRoomInvite(
+      roomId,
+      player.user_id
+    );
+    setInviteSubmittingUserId(null);
+
+    if (err) {
+      setInviteError(err.message);
+      return;
+    }
+
+    if (alreadyInRoom) {
+      setInviteInfo(`${player.display_name || "Người chơi"} đã ở trong phòng.`);
+    } else if (alreadyPending) {
+      setInviteInfo(`Đã gửi lời mời trước đó cho ${player.display_name || "người chơi"}.`);
+    } else {
+      setInviteInfo(`Đã gửi lời mời cho ${player.display_name || "người chơi"}.`);
+    }
+
+    await loadInvitableList();
   };
 
   const gameModeName =
@@ -182,7 +308,7 @@ export default function WaitingRoomScreen() {
         <View style={styles.loadingBox}>
           <Text style={styles.errorText}>{error || "Không tìm thấy phòng"}</Text>
           <TouchableOpacity style={styles.backButtonFull} onPress={handleLeaveRoom}>
-            <Text style={styles.backButtonFullText}>← Về Lobby</Text>
+            <Text style={styles.backButtonFullText}>← Về sảnh</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -219,10 +345,18 @@ export default function WaitingRoomScreen() {
               <Text style={styles.badgeIcon}>🎲</Text>
               <Text style={styles.badgeText}>{gameModeName}</Text>
             </View>
+            <View style={[styles.badge, styles.badgeGold]}>
+              <Text style={styles.badgeIcon}>XU</Text>
+              <Text style={styles.badgeTextGold}>
+                {room.bet_amount > 0
+                  ? `${room.bet_amount.toLocaleString("vi-VN")} / người`
+                  : "Không cược"}
+              </Text>
+            </View>
             {roomConfig?.password && (
               <View style={[styles.badge, styles.badgeBlue]}>
                 <Text style={styles.badgeIcon}>🔒</Text>
-                <Text style={styles.badgeText}>Private</Text>
+                <Text style={styles.badgeText}>Riêng tư</Text>
               </View>
             )}
           </View>
@@ -236,8 +370,14 @@ export default function WaitingRoomScreen() {
           </View>
 
           <View style={styles.playersGrid}>
-            {(room.room_players || []).map((rp) => (
-              <View key={rp.id} style={styles.playerCard}>
+            {(room.room_players || []).map((rp) => {
+              const avatarUrl = normalizeAvatarUrl(rp.profiles?.avatar_url);
+              const avatarEmoji = getAvatarEmoji(
+                `${rp.user_id || rp.slot}:${rp.profiles?.display_name || ""}`
+              );
+
+              return (
+                <View key={rp.id} style={styles.playerCard}>
                 {String(rp.user_id) === String(room.host_id) && (
                   <View style={styles.crownBadge}>
                     <Text style={styles.crownIcon}>👑</Text>
@@ -245,17 +385,19 @@ export default function WaitingRoomScreen() {
                 )}
                 <View style={styles.avatarContainer}>
                   <View style={[styles.avatar, rp.is_ready && styles.avatarReady]}>
-                    <Text style={styles.avatarEmoji}>
-                      {rp.slot === 1 ? "😎" : rp.slot === 2 ? "👩" : "👤"}
-                    </Text>
+                    {avatarUrl ? (
+                      <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+                    ) : (
+                      <Text style={styles.avatarEmoji}>{avatarEmoji}</Text>
+                    )}
                   </View>
                   <View style={[styles.readyBadge, !rp.is_ready && styles.notReadyBadge]}>
                     <Text style={styles.readyIcon}>{rp.is_ready ? "✓" : "⋯"}</Text>
                   </View>
                 </View>
                 <Text style={styles.playerName}>
-                  {rp.profiles?.display_name || `Player ${rp.slot}`}
-                  {String(rp.user_id) === String(room.host_id) ? " (Host)" : ""}
+                  {rp.profiles?.display_name || `Người chơi ${rp.slot}`}
+                  {String(rp.user_id) === String(room.host_id) ? " (Chủ phòng)" : ""}
                 </Text>
                 {String(rp.user_id) === String(currentUserId) && (
                   <TouchableOpacity
@@ -263,20 +405,26 @@ export default function WaitingRoomScreen() {
                     onPress={handleToggleReady}
                   >
                     <Text style={rp.is_ready ? styles.readyButtonTextActive : styles.readyButtonText}>
-                      {rp.is_ready ? "✓ Ready" : "Chưa sẵn sàng"}
+                      {rp.is_ready ? "✓ Sẵn sàng" : "Chưa sẵn sàng"}
                     </Text>
                   </TouchableOpacity>
                 )}
-              </View>
-            ))}
+                </View>
+              );
+            })}
 
             {Array.from({ length: maxPlayers - playerCount }).map((_, i) => (
-              <View key={`empty-${i}`} style={styles.emptySlot}>
+              <TouchableOpacity
+                key={`empty-${i}`}
+                style={styles.emptySlot}
+                onPress={handleOpenInviteModal}
+                activeOpacity={0.85}
+              >
                 <View style={styles.emptySlotIcon}>
                   <Text style={styles.emptySlotPlus}>+</Text>
                 </View>
-                <Text style={styles.emptySlotText}>Chỗ trống</Text>
-              </View>
+                <Text style={styles.emptySlotText}>Mời bạn vào phòng</Text>
+              </TouchableOpacity>
             ))}
           </View>
         </View>
@@ -345,10 +493,108 @@ export default function WaitingRoomScreen() {
         <View style={{ height: 120 }} />
       </ScrollView>
 
+      <Modal
+        transparent
+        visible={inviteModalVisible}
+        animationType="fade"
+        onRequestClose={() => setInviteModalVisible(false)}
+      >
+        <View style={styles.inviteOverlay}>
+          <View style={styles.inviteCard}>
+            <View style={styles.inviteHeader}>
+              <Text style={styles.inviteTitle}>Mời bạn vào phòng</Text>
+              <TouchableOpacity
+                style={styles.inviteCloseButton}
+                onPress={() => setInviteModalVisible(false)}
+              >
+                <Text style={styles.inviteCloseButtonText}>Đóng</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.inviteDescription}>
+              Danh sách bạn bè và người chơi đang online.
+            </Text>
+
+            <TouchableOpacity style={styles.inviteRefreshButton} onPress={() => void loadInvitableList()}>
+              <Text style={styles.inviteRefreshButtonText}>Làm mới danh sách</Text>
+            </TouchableOpacity>
+
+            {inviteError ? (
+              <View style={styles.inviteErrorBox}>
+                <Text style={styles.inviteErrorText}>{inviteError}</Text>
+              </View>
+            ) : null}
+
+            {inviteInfo ? (
+              <View style={styles.inviteInfoBox}>
+                <Text style={styles.inviteInfoText}>{inviteInfo}</Text>
+              </View>
+            ) : null}
+
+            {inviteLoading ? (
+              <View style={styles.inviteLoading}>
+                <ActivityIndicator size="small" color="#11d452" />
+                <Text style={styles.inviteLoadingText}>Đang tải người chơi online...</Text>
+              </View>
+            ) : (
+              <ScrollView style={styles.inviteList} showsVerticalScrollIndicator={false}>
+                {invitablePlayers.length === 0 ? (
+                  <Text style={styles.inviteEmptyText}>
+                    Chưa có người chơi online phù hợp để mời.
+                  </Text>
+                ) : (
+                  invitablePlayers.map((player) => {
+                    const avatarUrl = normalizeAvatarUrl(player.avatar_url);
+                    const avatarEmoji = getAvatarEmoji(
+                      `${player.user_id}:${player.display_name || "player"}`
+                    );
+                    const isInviting = inviteSubmittingUserId === player.user_id;
+
+                    return (
+                      <View key={player.user_id} style={styles.invitePlayerRow}>
+                        <View style={styles.invitePlayerLeft}>
+                          <View style={styles.inviteAvatarWrap}>
+                            {avatarUrl ? (
+                              <Image source={{ uri: avatarUrl }} style={styles.inviteAvatarImage} />
+                            ) : (
+                              <Text style={styles.inviteAvatarEmoji}>{avatarEmoji}</Text>
+                            )}
+                          </View>
+                          <View style={styles.inviteMeta}>
+                            <Text style={styles.invitePlayerName}>
+                              {player.display_name || player.user_id.slice(0, 8)}
+                            </Text>
+                            <Text style={styles.invitePlayerSub}>
+                              {player.is_friend ? "Bạn bè" : "Người chơi online"}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[styles.inviteActionButton, isInviting && styles.inviteActionButtonDisabled]}
+                          onPress={() => void handleSendInvite(player)}
+                          disabled={isInviting}
+                        >
+                          {isInviting ? (
+                            <ActivityIndicator size="small" color="#000" />
+                          ) : (
+                            <Text style={styles.inviteActionButtonText}>Mời</Text>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })
+                )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.actionBar}>
         <View style={styles.actionButtons}>
           <TouchableOpacity style={styles.leaveButton} onPress={handleLeaveRoom}>
-            <Text style={styles.leaveIcon}>🚪 Rời phòng</Text>
+              <Text style={styles.leaveIcon}>🚪 Rời phòng</Text>
           </TouchableOpacity>
 
           {isHost ? (
@@ -362,7 +608,7 @@ export default function WaitingRoomScreen() {
             </TouchableOpacity>
           ) : (
             <View style={[styles.startButton, styles.startButtonDisabled]}>
-              <Text style={styles.startButtonText}>Chờ host bắt đầu</Text>
+              <Text style={styles.startButtonText}>Chờ chủ phòng bắt đầu</Text>
             </View>
           )}
         </View>
@@ -417,8 +663,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   badgeBlue: { backgroundColor: "rgba(59, 130, 246, 0.1)", borderColor: "rgba(59, 130, 246, 0.2)" },
+  badgeGold: {
+    backgroundColor: "rgba(250, 204, 21, 0.12)",
+    borderColor: "rgba(250, 204, 21, 0.35)",
+  },
   badgeIcon: { fontSize: 14 },
   badgeText: { fontSize: 12, fontWeight: "600", color: "#11d452" },
+  badgeTextGold: { fontSize: 12, fontWeight: "700", color: "#facc15" },
   playersSection: { marginTop: 8, paddingHorizontal: 16 },
   playersSectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, paddingHorizontal: 8 },
   playersSectionTitle: { fontSize: 12, fontWeight: "600", color: "#94a3b8", letterSpacing: 1 },
@@ -445,8 +696,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 2,
     borderColor: "#64748b",
+    overflow: "hidden",
   },
   avatarReady: { borderColor: "#11d452", borderWidth: 3 },
+  avatarImage: { width: "100%", height: "100%", borderRadius: 30 },
   avatarEmoji: { fontSize: 32 },
   readyBadge: {
     position: "absolute",
@@ -482,6 +735,172 @@ const styles = StyleSheet.create({
   emptySlotIcon: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#334155", alignItems: "center", justifyContent: "center", marginBottom: 8 },
   emptySlotPlus: { fontSize: 24, color: "#64748b" },
   emptySlotText: { fontSize: 13, fontWeight: "500", color: "#64748b" },
+  inviteOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.58)",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  inviteCard: {
+    backgroundColor: "#1a3524",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#2a4535",
+    padding: 14,
+    maxHeight: "76%",
+  },
+  inviteHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  inviteTitle: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  inviteCloseButton: {
+    backgroundColor: "#334155",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  inviteCloseButtonText: {
+    color: "#e2e8f0",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  inviteDescription: {
+    marginTop: 8,
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  inviteRefreshButton: {
+    alignSelf: "flex-start",
+    marginTop: 10,
+    backgroundColor: "rgba(17, 212, 82, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(17, 212, 82, 0.4)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  inviteRefreshButtonText: {
+    color: "#bbf7d0",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  inviteErrorBox: {
+    marginTop: 10,
+    backgroundColor: "rgba(239, 68, 68, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.4)",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  inviteErrorText: {
+    color: "#fecaca",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  inviteInfoBox: {
+    marginTop: 10,
+    backgroundColor: "rgba(17, 212, 82, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(17, 212, 82, 0.4)",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  inviteInfoText: {
+    color: "#bbf7d0",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  inviteLoading: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  inviteLoadingText: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  inviteList: {
+    marginTop: 12,
+  },
+  inviteEmptyText: {
+    color: "#94a3b8",
+    fontSize: 13,
+  },
+  invitePlayerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    backgroundColor: "#12281b",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#244030",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  invitePlayerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  inviteAvatarWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#2a4535",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  inviteAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  inviteAvatarEmoji: {
+    fontSize: 22,
+  },
+  inviteMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+  invitePlayerName: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  invitePlayerSub: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  inviteActionButton: {
+    backgroundColor: "#11d452",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 54,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inviteActionButtonDisabled: {
+    opacity: 0.65,
+  },
+  inviteActionButtonText: {
+    color: "#000",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   readySection: {
     marginHorizontal: 16,
     marginTop: 16,
@@ -578,3 +997,4 @@ const styles = StyleSheet.create({
   startButtonText: { fontSize: 16, fontWeight: "bold", color: "#000" },
   startButtonIcon: { fontSize: 20 },
 });
+

@@ -29,8 +29,10 @@ interface GameResultProps {
   gameStats: {
     totalTurns: number;
     duration: string;
-    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win";
+    winReason: "normal" | "forfeit" | "ball8_early" | "ball8_win" | "ball9_win" | "carom_win";
   };
+  betAmount?: number;
+  myCoinDelta?: number;
   onBackToLobby: () => void;
   onExit: () => void;
 }
@@ -40,6 +42,8 @@ export default function GameResultScreen({
   winner,
   loser,
   gameStats,
+  betAmount = 0,
+  myCoinDelta = 0,
   onBackToLobby,
   onExit,
 }: GameResultProps) {
@@ -82,6 +86,10 @@ export default function GameResultScreen({
         return `${loser.name} đánh bi 8 quá sớm!`;
       case "ball8_win":
         return "Hoàn thành xuất sắc!";
+      case "ball9_win":
+        return "Vào bi 9 hợp lệ!";
+      case "carom_win":
+        return "Đủ điểm 3 băng!";
       default:
         return "Chiến thắng xứng đáng!";
     }
@@ -95,10 +103,23 @@ export default function GameResultScreen({
         return "💀";
       case "ball8_win":
         return "🎯";
+      case "ball9_win":
+        return "9";
+      case "carom_win":
+        return "3";
       default:
         return "🏆";
     }
   };
+
+  const safeBetAmount = Number.isFinite(betAmount) ? Math.max(0, betAmount) : 0;
+  const safeCoinDelta = Number.isFinite(myCoinDelta) ? myCoinDelta : 0;
+  const rewardLabel =
+    safeCoinDelta > 0
+      ? `+${safeCoinDelta.toLocaleString("vi-VN")} xu`
+      : safeCoinDelta < 0
+        ? `-${Math.abs(safeCoinDelta).toLocaleString("vi-VN")} xu`
+        : "0 xu";
 
   return (
     <Modal
@@ -158,12 +179,28 @@ export default function GameResultScreen({
                 <Text style={styles.avatarText}>{winner.avatar}</Text>
               </View>
               <View style={styles.winnerBadge}>
-                <Text style={styles.winnerBadgeText}>WINNER</Text>
+                <Text style={styles.winnerBadgeText}>NGƯỜI THẮNG</Text>
               </View>
             </View>
 
             <Text style={styles.winnerName}>{winner.name}</Text>
-            <Text style={styles.rewardText}>+150 Điểm thưởng</Text>
+            <Text
+              style={[
+                styles.rewardText,
+                safeCoinDelta > 0
+                  ? styles.rewardTextPositive
+                  : safeCoinDelta < 0
+                    ? styles.rewardTextNegative
+                    : styles.rewardTextNeutral,
+              ]}
+            >
+              {rewardLabel}
+            </Text>
+            <Text style={styles.coinHintText}>
+              {safeBetAmount > 0
+                ? `Mức cược: ${safeBetAmount.toLocaleString("vi-VN")} xu / người`
+                : "Trận này không đặt cược"}
+            </Text>
 
             {/* Scoreboard */}
             <View style={styles.scoreboard}>
@@ -235,20 +272,21 @@ export default function GameResultScreen({
               </View>
             </View>
 
-            {/* Rank Up Banner (if applicable) */}
-            {gameStats.winReason !== "forfeit" && winner.id === 1 && (
-              <View style={styles.rankUpBanner}>
-                <View style={styles.rankUpIcon}>
-                  <Text style={styles.rankUpIconText}>📈</Text>
-                </View>
-                <View style={styles.rankUpText}>
-                  <Text style={styles.rankUpTitle}>Thăng hạng!</Text>
-                  <Text style={styles.rankUpSubtitle}>
-                    Bạn đã đạt hạng Chuyên Nghiệp II
-                  </Text>
-                </View>
+            <View style={styles.rankUpBanner}>
+              <View style={styles.rankUpIcon}>
+                <Text style={styles.rankUpIconText}>💰</Text>
               </View>
-            )}
+              <View style={styles.rankUpText}>
+                <Text style={styles.rankUpTitle}>Biến động xu</Text>
+                <Text style={styles.rankUpSubtitle}>
+                  {safeCoinDelta > 0
+                    ? `Bạn vừa thắng cược ${Math.abs(safeCoinDelta).toLocaleString("vi-VN")} xu`
+                    : safeCoinDelta < 0
+                      ? `Bạn vừa thua cược ${Math.abs(safeCoinDelta).toLocaleString("vi-VN")} xu`
+                      : "Không có thay đổi xu"}
+                </Text>
+              </View>
+            </View>
           </View>
 
           {/* Footer Actions */}
@@ -425,7 +463,20 @@ const styles = StyleSheet.create({
   rewardText: {
     fontSize: 16,
     fontWeight: "600",
+    marginBottom: 6,
+  },
+  rewardTextPositive: {
     color: "#11d452",
+  },
+  rewardTextNegative: {
+    color: "#ef4444",
+  },
+  rewardTextNeutral: {
+    color: "#cbd5e1",
+  },
+  coinHintText: {
+    fontSize: 12,
+    color: "rgba(255, 255, 255, 0.65)",
     marginBottom: 24,
   },
   scoreboard: {
@@ -612,3 +663,5 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
 });
+
+

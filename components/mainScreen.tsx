@@ -1,9 +1,10 @@
-// components/MainScreen.tsx - LOBBY SCREEN + AUTH + TÌM MÃ PHÒNG
+// components/MainScreen.tsx - LOBBY SCREEN + AUTH + TĂŒM MĂƒ PHĂ’NG
 import React, { useState } from "react";
 import {
   StyleSheet,
   View,
   Text,
+  Image,
   TextInput,
   TouchableOpacity,
   ScrollView,
@@ -11,6 +12,7 @@ import {
 } from "react-native";
 import type { User } from "@supabase/supabase-js";
 import { router } from "expo-router";
+import { getAvatarEmoji, normalizeAvatarUrl } from "../utils/avatar";
 
 export interface Room {
   id: string;
@@ -26,63 +28,82 @@ export interface Room {
 interface MainScreenProps {
   user: User | null;
   authLoading?: boolean;
+  coinsBalance?: number | null;
   rooms?: Room[];
   onCreateRoom: () => void;
   onJoinRandom: () => void;
   onJoinRoom: (roomId: string) => void;
   onJoinByCode?: (roomCode: string) => void;
   joinByCodeLoading?: boolean;
+  onOpenShop?: () => void;
+  onOpenRanking?: () => void;
+  onOpenFriends?: () => void;
+  onSignOut?: () => void;
 }
 
 export default function MainScreen({
   user,
   authLoading = false,
+  coinsBalance = null,
   rooms: roomsProp,
   onCreateRoom,
   onJoinRandom,
   onJoinRoom,
   onJoinByCode,
   joinByCodeLoading = false,
+  onOpenShop,
+  onOpenRanking,
+  onOpenFriends,
+  onSignOut,
 }: MainScreenProps) {
   const [roomCodeInput, setRoomCodeInput] = useState("");
+  const userAvatarUrl = normalizeAvatarUrl(user?.user_metadata?.avatar_url);
+  const userAvatarEmojiMeta =
+    typeof user?.user_metadata?.avatar_emoji === "string"
+      ? user.user_metadata.avatar_emoji.trim()
+      : typeof user?.user_metadata?.avatar === "string"
+        ? user.user_metadata.avatar.trim()
+        : "";
+  const userAvatarEmoji =
+    userAvatarEmojiMeta || getAvatarEmoji(user?.id || user?.email || "guest");
   const defaultRooms: Room[] = [
     {
       id: "402",
-      name: "Sarah's Lounge",
+      name: "Bàn của Sarah",
       host: "Sarah",
-      avatar: "👩",
+      avatar: "A",
       gameType: "8-Ball",
-      coins: "500 Coins",
+      coins: "500 xu",
       players: "1/2",
       status: "live",
     },
     {
       id: "882",
-      name: "High Rollers Only",
+      name: "Bàn cao thủ",
       host: "Mike",
-      avatar: "👨",
+      avatar: "B",
       gameType: "9-Ball",
-      coins: "1K Coins",
+      coins: "1K xu",
       players: "0/2",
       status: "waiting",
     },
     {
       id: "105",
-      name: "Practice Match",
+      name: "Bàn luyện tập",
       host: "Kevin",
-      avatar: "🧑",
+      avatar: "C",
       gameType: "Snooker",
-      coins: "Free",
+      coins: "Miễn phí",
       players: "1/2",
       status: "live",
     },
     {
       id: "392",
-      name: "Pro League Quals",
+      name: "Vòng loại cao thủ",
       host: "TuanAn",
-      avatar: "👤",
+      avatar: "D",
       gameType: "8-Ball",
-      coins: "200 Coins",
+      coins: "200 xu",
       players: "2/2",
       status: "full",
     },
@@ -103,12 +124,16 @@ export default function MainScreen({
   const getStatusText = (status: Room["status"]) => {
     switch (status) {
       case "live":
-        return "LIVE";
+        return "ĐANG CHƠI";
       case "waiting":
-        return "WAITING";
+        return "ĐANG CHỜ";
       case "full":
-        return "FULL";
+        return "ĐỦ NGƯỜI";
     }
+  };
+
+  const handleSearchPress = () => {
+    onOpenFriends?.();
   };
 
   return (
@@ -117,12 +142,18 @@ export default function MainScreen({
       <View style={styles.header}>
         <View style={styles.userInfo}>
           <View style={styles.avatarContainer}>
-            <Text style={styles.avatarText}>{user ? "😎" : "👤"}</Text>
+            <View style={[styles.avatarCircle, user && styles.avatarCircleOnline]}>
+              {userAvatarUrl ? (
+                <Image source={{ uri: userAvatarUrl }} style={styles.avatarImage} />
+              ) : (
+                <Text style={styles.avatarEmoji}>{user ? userAvatarEmoji : "👤"}</Text>
+              )}
+            </View>
             {user && <View style={styles.onlineIndicator} />}
           </View>
           <View>
             <Text style={styles.welcomeText}>
-              {user ? "Welcome back," : "Chào bạn,"}
+              {user ? "Chào mừng trở lại," : "Xin chào,"}
             </Text>
             {authLoading ? (
               <ActivityIndicator size="small" color="#11d452" />
@@ -130,28 +161,36 @@ export default function MainScreen({
               <Text style={styles.userName}>
                 {user?.user_metadata?.display_name ||
                   user?.email?.split("@")[0] ||
-                  "Đăng nhập để chơi multiplayer"}
+                  "Đăng nhập để chơi nhiều người"}
               </Text>
             )}
           </View>
         </View>
 
         <View style={styles.headerButtons}>
-          {!user && !authLoading && (
+          {user && !authLoading && (
+            <View style={styles.coinBadge}>
+              <Text style={styles.coinBadgeText}>
+                XU {typeof coinsBalance === "number" ? coinsBalance.toLocaleString("vi-VN") : "..."}
+              </Text>
+            </View>
+          )}
+          {!user && !authLoading ? (
             <TouchableOpacity
               style={styles.loginButton}
               onPress={() => router.push("/login")}
             >
               <Text style={styles.loginButtonText}>Đăng nhập</Text>
             </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.logoutButton, !user && styles.logoutButtonDisabled]}
+              onPress={onSignOut}
+              disabled={!user}
+            >
+              <Text style={styles.logoutButtonText}>Đăng xuất</Text>
+            </TouchableOpacity>
           )}
-          <TouchableOpacity style={styles.iconButton}>
-            <Text style={styles.iconText}>🔔</Text>
-            <View style={styles.notificationDot} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.iconButton}>
-            <Text style={styles.iconText}>☰</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -162,11 +201,11 @@ export default function MainScreen({
           <View style={styles.bannerOverlay}>
             <View style={styles.bannerContent}>
               <View style={styles.playNowBadge}>
-                <Text style={styles.playNowText}>PLAY NOW</Text>
+                <Text style={styles.playNowText}>CHƠI NGAY</Text>
               </View>
-              <Text style={styles.bannerTitle}>Start Match</Text>
+              <Text style={styles.bannerTitle}>Bắt đầu trận</Text>
               <Text style={styles.bannerSubtitle}>
-                Host a room or join a random game instantly.
+                Tạo phòng online hoặc chơi offline ngay lập tức.
               </Text>
 
               <View style={styles.bannerButtons}>
@@ -174,31 +213,31 @@ export default function MainScreen({
                   style={styles.createButton}
                   onPress={onCreateRoom}
                 >
-                  <Text style={styles.createButtonIcon}>➕</Text>
-                  <Text style={styles.createButtonText}>Create Room</Text>
+                  <Text style={styles.createButtonIcon}>+</Text>
+                  <Text style={styles.createButtonText}>Tạo phòng</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.joinButton}
                   onPress={onJoinRandom}
                 >
-                  <Text style={styles.joinButtonIcon}>🔀</Text>
-                  <Text style={styles.joinButtonText}>Join Random</Text>
+                  <Text style={styles.joinButtonIcon}>~</Text>
+                  <Text style={styles.joinButtonText}>Chơi offline (2 người)</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
         </View>
 
-        {/* Tìm phòng theo mã */}
+        {/* Find room by code */}
         <View style={styles.joinByCodeSection}>
-          <Text style={styles.joinByCodeLabel}>🔍 Tìm phòng theo mã</Text>
+          <Text style={styles.joinByCodeLabel}>Tìm phòng bằng mã</Text>
           <View style={styles.joinByCodeRow}>
             <TextInput
               style={styles.joinByCodeInput}
               value={roomCodeInput}
               onChangeText={(text) => setRoomCodeInput(text.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))}
-              placeholder="Nhập mã phòng (VD: ABC123)"
+              placeholder="Nhập mã phòng (vd: ABC123)"
               placeholderTextColor="#64748b"
               maxLength={6}
               autoCapitalize="characters"
@@ -226,27 +265,27 @@ export default function MainScreen({
           style={styles.filterTabs}
         >
           <TouchableOpacity style={styles.filterTabActive}>
-            <Text style={styles.filterTabActiveText}>All Rooms</Text>
+            <Text style={styles.filterTabActiveText}>Tất cả phòng</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.filterTab}>
-            <Text style={styles.filterTabText}>Friends</Text>
+            <Text style={styles.filterTabText}>Bạn bè</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.filterTab}>
-            <Text style={styles.filterTabText}>Ranked</Text>
+            <Text style={styles.filterTabText}>Xếp hạng</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.filterTab}>
-            <Text style={styles.filterTabText}>Casual</Text>
+            <Text style={styles.filterTabText}>Thường</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.filterTab}>
-            <Text style={styles.filterTabText}>Tournaments</Text>
+            <Text style={styles.filterTabText}>Giải đấu</Text>
           </TouchableOpacity>
         </ScrollView>
 
         {/* Room List Header */}
         <View style={styles.roomListHeader}>
-          <Text style={styles.roomListTitle}>Active Rooms</Text>
+          <Text style={styles.roomListTitle}>Phòng đang mở</Text>
           <TouchableOpacity>
-            <Text style={styles.seeAllText}>See all</Text>
+            <Text style={styles.seeAllText}>Xem tất cả</Text>
           </TouchableOpacity>
         </View>
 
@@ -274,7 +313,7 @@ export default function MainScreen({
                 </View>
                 <View style={styles.roomInfo}>
                   <Text style={styles.roomInfoText}>
-                    {room.gameType} • {room.coins}
+                    {room.gameType} | {room.coins}
                   </Text>
                 </View>
               </View>
@@ -288,7 +327,7 @@ export default function MainScreen({
                   <View style={styles.roomDetails}>
                     <Text style={styles.roomName}>{room.name}</Text>
                     <Text style={styles.roomMeta}>
-                      Room #{room.id} • {room.players} Players
+                      Phòng #{room.id} | {room.players} người
                     </Text>
                   </View>
                 </View>
@@ -308,7 +347,7 @@ export default function MainScreen({
                         styles.joinRoomButtonTextDisabled,
                     ]}
                   >
-                    {room.status === "full" ? "Full" : "Join"}
+                    {room.status === "full" ? "Đủ người" : "Vào"}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -323,27 +362,27 @@ export default function MainScreen({
       <View style={styles.bottomNav}>
         <TouchableOpacity style={styles.navItem}>
           <Text style={styles.navIconActive}>🏠</Text>
-          <Text style={styles.navTextActive}>Home</Text>
+          <Text style={styles.navTextActive}>Trang chủ</Text>
           <View style={styles.navIndicator} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem}>
+        <TouchableOpacity style={styles.navItem} onPress={handleSearchPress}>
           <Text style={styles.navIcon}>🔍</Text>
-          <Text style={styles.navText}>Find</Text>
+          <Text style={styles.navText}>Bạn bè</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItemCenter}>
+        <TouchableOpacity style={styles.navItemCenter} onPress={onCreateRoom}>
           <Text style={styles.navIconCenter}>🎮</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem}>
+        <TouchableOpacity style={styles.navItem} onPress={onOpenRanking}>
           <Text style={styles.navIcon}>📊</Text>
-          <Text style={styles.navText}>Rank</Text>
+          <Text style={styles.navText}>Hạng</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem}>
+        <TouchableOpacity style={styles.navItem} onPress={onOpenShop}>
           <Text style={styles.navIcon}>🎱</Text>
-          <Text style={styles.navText}>Cues</Text>
+          <Text style={styles.navText}>Gậy</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -371,8 +410,26 @@ const styles = StyleSheet.create({
   avatarContainer: {
     position: "relative",
   },
-  avatarText: {
-    fontSize: 32,
+  avatarCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1a3524",
+    borderWidth: 2,
+    borderColor: "#2a4535",
+    overflow: "hidden",
+  },
+  avatarCircleOnline: {
+    borderColor: "#11d452",
+  },
+  avatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  avatarEmoji: {
+    fontSize: 30,
   },
   onlineIndicator: {
     position: "absolute",
@@ -400,6 +457,19 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: "center",
   },
+  coinBadge: {
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#2a4535",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  coinBadgeText: {
+    color: "#facc15",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
   loginButton: {
     backgroundColor: "#11d452",
     paddingHorizontal: 14,
@@ -411,28 +481,21 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#000",
   },
-  iconButton: {
-    width: 40,
-    height: 40,
-    backgroundColor: "#1c3024",
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
+  logoutButton: {
+    backgroundColor: "rgba(239, 68, 68, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.5)",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
-  iconText: {
-    fontSize: 20,
+  logoutButtonDisabled: {
+    opacity: 0.55,
   },
-  notificationDot: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 8,
-    height: 8,
-    backgroundColor: "#ef4444",
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: "#1c3024",
+  logoutButtonText: {
+    color: "#fecaca",
+    fontSize: 13,
+    fontWeight: "700",
   },
   content: {
     flex: 1,
@@ -480,6 +543,26 @@ const styles = StyleSheet.create({
   bannerButtons: {
     flexDirection: "row",
     gap: 12,
+  },
+  botButton: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    gap: 8,
+  },
+  botButtonIcon: {
+    fontSize: 16,
+  },
+  botButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#e2e8f0",
   },
   createButton: {
     flex: 1,
@@ -764,3 +847,4 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
 });
+

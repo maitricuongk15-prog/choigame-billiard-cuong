@@ -58,3 +58,30 @@ npx expo start
 
 - Game 2 người hiện chạy **cùng máy** (local). Đồng bộ bước bắn giữa 2 thiết bị (multiplayer thật trong game) cần thêm Realtime channel cho game events (shot, balls state) – có thể làm bước tiếp theo.
 - Chat trong phòng chờ hiện chỉ lưu trên máy, chưa gửi qua Supabase.
+
+## 7. Shop + coins migration
+
+Run additional SQL migration after `001_initial.sql`:
+
+- `supabase/migrations/002_shop_and_coins.sql`
+
+This migration adds:
+- `profiles.coins` (new user starts with 10,000 coins)
+- `cues` and `user_cues` tables
+- RPC: `purchase_cue` and `equip_cue`
+
+## 8. Betting + cue rebalance migration
+
+Run this migration after `002_shop_and_coins.sql`:
+
+- `supabase/migrations/003_betting_and_cue_rebalance.sql`
+
+This migration adds:
+- Room bet fields (`rooms.bet_amount`, settlement status, winner slot)
+- Stake tracking in `room_players`
+- RPCs:
+  - `create_room_with_bet`
+  - `join_room_with_bet`
+  - `leave_room_with_bet`
+  - `settle_room_bet`
+- Rebalanced cue prices/stats + new premium cues

@@ -179,3 +179,145 @@ export const initialBalls: Ball[] = [
     isStriped: true,
   },
 ];
+
+export const initialBalls9: Ball[] = [
+  {
+    id: 0,
+    x: 150,
+    y: 175,
+    vx: 0,
+    vy: 0,
+    color: "#ffffff",
+    isPocketed: false,
+  },
+  {
+    id: 1,
+    x: 370,
+    y: 175,
+    vx: 0,
+    vy: 0,
+    color: "#FFD700",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 2,
+    x: 390,
+    y: 163,
+    vx: 0,
+    vy: 0,
+    color: "#0000FF",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 3,
+    x: 390,
+    y: 187,
+    vx: 0,
+    vy: 0,
+    color: "#FF0000",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 4,
+    x: 410,
+    y: 151,
+    vx: 0,
+    vy: 0,
+    color: "#800080",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 9,
+    x: 410,
+    y: 175,
+    vx: 0,
+    vy: 0,
+    color: "#FFD700",
+    isPocketed: false,
+    isStriped: true,
+  },
+  {
+    id: 5,
+    x: 410,
+    y: 199,
+    vx: 0,
+    vy: 0,
+    color: "#FF8C00",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 6,
+    x: 430,
+    y: 163,
+    vx: 0,
+    vy: 0,
+    color: "#228B22",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 7,
+    x: 430,
+    y: 187,
+    vx: 0,
+    vy: 0,
+    color: "#8B4513",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 8,
+    x: 450,
+    y: 175,
+    vx: 0,
+    vy: 0,
+    color: "#000000",
+    isPocketed: false,
+    isStriped: false,
+  },
+];
+
+export const initialBalls3Cushion: Ball[] = [
+  {
+    id: 0,
+    x: 150,
+    y: 175,
+    vx: 0,
+    vy: 0,
+    color: "#ffffff",
+    isPocketed: false,
+  },
+  {
+    id: 1,
+    x: 430,
+    y: 120,
+    vx: 0,
+    vy: 0,
+    color: "#ff3b30",
+    isPocketed: false,
+    isStriped: false,
+  },
+  {
+    id: 2,
+    x: 430,
+    y: 230,
+    vx: 0,
+    vy: 0,
+    color: "#ffd700",
+    isPocketed: false,
+    isStriped: false,
+  },
+];
+
+const cloneBalls = (balls: Ball[]): Ball[] => balls.map((b) => ({ ...b }));
+
+export function getInitialBallsByMode(mode?: "8ball" | "9ball" | "3cushion" | "ai"): Ball[] {
+  if (mode === "9ball") return cloneBalls(initialBalls9);
+  if (mode === "3cushion") return cloneBalls(initialBalls3Cushion);
+  return cloneBalls(initialBalls);
+}

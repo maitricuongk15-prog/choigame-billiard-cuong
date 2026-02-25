@@ -8,6 +8,8 @@ export interface TargetPrediction {
     contactY: number;
     targetVx: number;
     targetVy: number;
+    cueVx: number;
+    cueVy: number;
   };
 }
 
@@ -22,8 +24,12 @@ export const calculateTargetPredictions = (
 ): TargetPrediction[] => {
   if (isMoving || cueBall.isPocketed) return [];
 
-  // ✅ SỬA LỖI: Tạo cache key để tránh tính lại không cần thiết
-  const cacheKey = `${Math.round(cueBall.x)}_${Math.round(cueBall.y)}_${Math.round(aimAngle * 1000)}`;
+  // Include object-ball positions in cache key to avoid stale predictions.
+  const ballsSignature = balls
+    .filter((b) => b.id !== 0 && !b.isPocketed)
+    .map((b) => `${b.id}:${Math.round(b.x)}:${Math.round(b.y)}`)
+    .join("|");
+  const cacheKey = `${Math.round(cueBall.x)}_${Math.round(cueBall.y)}_${Math.round(aimAngle * 1000)}_${ballsSignature}`;
 
   // Kiểm tra cache
   if (predictionCache.has(cacheKey)) {
@@ -84,36 +90,12 @@ export const findClosestTarget = (
   });
 };
 
-/** Khớp với resolveCollision: restitution 0.97 + friction 0.92 cho tangent */
-const RESTITUTION = 0.97;
-const FRICTION_FACTOR = 0.92;
-
 export const calculateCueBallReflection = (
   closestTarget: TargetPrediction,
-  cueBall: Ball,
+  _cueBall: Ball,
 ): { endX: number; endY: number } | null => {
-  const dirX = (closestTarget.path.contactX - cueBall.x);
-  const dirY = (closestTarget.path.contactY - cueBall.y);
-  const dist = Math.sqrt(dirX * dirX + dirY * dirY);
-  if (dist < 1e-6) return null;
-
-  const v1x = dirX / dist;
-  const v1y = dirY / dist;
-
-  const nx = closestTarget.path.targetVx;
-  const ny = closestTarget.path.targetVy;
-  const tx = -ny;
-  const ty = nx;
-
-  const v1n = v1x * nx + v1y * ny;
-  const v1t = v1x * tx + v1y * ty;
-
-  const v2n = 0;
-  const v1nNew = ((1 - RESTITUTION) * v1n + (1 + RESTITUTION) * v2n) / 2;
-  const v1tNew = v1t * FRICTION_FACTOR;
-
-  const reflectX = v1nNew * nx + v1tNew * tx;
-  const reflectY = v1nNew * ny + v1tNew * ty;
+  const reflectX = closestTarget.path.cueVx;
+  const reflectY = closestTarget.path.cueVy;
 
   const reflectLen = Math.sqrt(reflectX * reflectX + reflectY * reflectY);
   if (reflectLen < 1e-6) return null;

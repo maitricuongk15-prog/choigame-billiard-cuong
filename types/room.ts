@@ -9,6 +9,10 @@ export interface RoomRow {
   player_count: number;
   password_hash: string | null;
   status: RoomStatus;
+  bet_amount: number;
+  bet_settled: boolean;
+  winner_slot: number | null;
+  finished_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -19,10 +23,11 @@ export interface RoomPlayerRow {
   user_id: string;
   slot: number;
   is_ready: boolean;
+  stake_paid: boolean;
   joined_at: string;
   profiles?: { display_name: string | null; avatar_url: string | null } | null;
 }
 
 export interface RoomWithPlayers extends RoomRow {
-  room_players: (RoomPlayerRow & { profiles: { display_name: string | null } | null })[];
+  room_players: RoomPlayerRow[];
 }

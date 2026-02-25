@@ -1,7 +1,15 @@
 // app/(tabs)/explore(game).tsx - GAME BI-A + ĐỒNG BỘ MULTIPLAYER
-import React, { useState, useEffect, useRef } from "react";
-import { StyleSheet, View, Text, TouchableOpacity, Modal } from "react-native";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import {
+  StyleSheet,
+  View,
+  Text,
+  TouchableOpacity,
+  Modal,
+  useWindowDimensions,
+} from "react-native";
 import { router } from "expo-router";
+import * as ScreenOrientation from "expo-screen-orientation";
 import Svg, {
   Circle,
   Line,
@@ -9,20 +17,30 @@ import Svg, {
   Defs,
   RadialGradient,
   Stop,
+  Text as SvgText,
 } from "react-native-svg";
 import {
   TABLE_WIDTH,
   TABLE_HEIGHT,
   BALL_RADIUS,
   POCKETS,
+  type Ball,
 } from "../../utils/physics";
 import { GAME_CONFIG, GAME_MESSAGES } from "../../constants/game";
-import { useTwoPlayerGameLogic } from "../../hooks/useTwoPlayerGameLogic";
+import { getCueVisualTheme } from "../../constants/cueVisuals";
+import { getCueNameVi } from "../../constants/cueLocale";
+import {
+  useTwoPlayerGameLogic,
+  type SerializedGameState,
+} from "../../hooks/useTwoPlayerGameLogic";
 import { useAimControl } from "../../hooks/useAimControl";
 import { useGameContext } from "../../context/gameContext";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
+import { getEquippedCue } from "../../services/shopService";
+import { settleRoomBet } from "../../services/roomService";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { CueRow } from "../../types/cue";
 import {
   isGameMoving,
   calculateAimLine,
@@ -38,17 +56,73 @@ import {
 } from "../../utils/predictionHelpers";
 import GameResultScreen from "../gameResultScreen";
 
+type GameStateBroadcastPacket = {
+  seq: number;
+  sentAt: number;
+  state: SerializedGameState;
+};
+
 export default function BilliardGame() {
-  const { roomId, roomHostId, player1Name, player2Name, setPlayerNames } = useGameContext();
+  const { roomId, roomHostId, roomConfig, player1Name, player2Name, setPlayerNames } =
+    useGameContext();
   const { user } = useAuth();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
   const gameChannelRef = useRef<RealtimeChannel | null>(null);
   const isMultiplayer = !!(roomId && roomId !== "RANDOM");
+  const isAiMatch = !isMultiplayer && roomConfig?.gameMode === "ai";
+  const isNineBallMode = roomConfig?.gameMode === "9ball";
+  const isThreeCushionMode = roomConfig?.gameMode === "3cushion";
+  const turnTimeLimit = isThreeCushionMode
+    ? GAME_CONFIG.THREE_CUSHION_TURN_TIME_SECONDS
+    : GAME_CONFIG.TURN_TIME_SECONDS;
   const isHost =
     isMultiplayer &&
     !!user &&
     !!roomHostId &&
     String(user.id) === String(roomHostId);
+
+  const tableLayout = useMemo(() => {
+    const isLandscapeViewport = screenWidth > screenHeight;
+    const tablePadding = 10;
+    const sidePanelWidth = 64;
+    const horizontalGap = 15;
+    const horizontalSafe = 36;
+    const verticalReserved = isLandscapeViewport ? 250 : 320;
+
+    const maxTableWidth =
+      screenWidth -
+      horizontalSafe -
+      sidePanelWidth -
+      horizontalGap -
+      tablePadding * 2;
+    const maxTableHeight = screenHeight - verticalReserved - tablePadding * 2;
+
+    const rawScale = Math.min(
+      maxTableWidth / TABLE_WIDTH,
+      maxTableHeight / TABLE_HEIGHT,
+    );
+
+    // Allow upscaling on large landscape phones/tablets so table is not tiny.
+    const tableScale = Math.max(
+      0.62,
+      Math.min(2.15, Number.isFinite(rawScale) ? rawScale : 1),
+    );
+    const renderedTableWidth = Math.round(TABLE_WIDTH * tableScale);
+    const renderedTableHeight = Math.round(TABLE_HEIGHT * tableScale);
+    const sliderHeight = Math.round(
+      Math.max(170, Math.min(360, renderedTableHeight - 16)),
+    );
+
+    return {
+      tablePadding,
+      renderedTableWidth,
+      renderedTableHeight,
+      sliderHeight,
+      tableScaleX: TABLE_WIDTH / renderedTableWidth,
+      tableScaleY: TABLE_HEIGHT / renderedTableHeight,
+    };
+  }, [screenHeight, screenWidth]);
 
   const {
     balls,
@@ -70,9 +144,25 @@ export default function BilliardGame() {
     applyRemoteState,
     applyRemoteGameResult,
     setCueBallPosition,
+    pushOutAvailableFor,
+    pushOutDecisionPending,
+    declarePushOut,
+    choosePushOutDecision,
   } = useTwoPlayerGameLogic({
+    gameMode: roomConfig?.gameMode,
     onGameOver: (result) => {
-      // Cả host và guest đều broadcast khi kết thúc trận (guest khi forfeit, host khi thắng bình thường)
+      if (isMultiplayer && isHost && roomId) {
+        const settleKey = `${roomId}:${result.winner.id}`;
+        if (settledBetKeyRef.current !== settleKey) {
+          settledBetKeyRef.current = settleKey;
+          void settleRoomBet(roomId, result.winner.id).then(({ error }) => {
+            if (error) {
+              console.warn("[BET] settle_room_bet failed:", error.message);
+            }
+          });
+        }
+      }
+
       if (isMultiplayer && gameChannelRef.current) {
         gameChannelRef.current.send({
           type: "broadcast",
@@ -90,12 +180,18 @@ export default function BilliardGame() {
   const [isDraggingCueBall, setIsDraggingCueBall] = useState(false);
   const [isAimingInBallInHand, setIsAimingInBallInHand] = useState(false);
   const [showExitModal, setShowExitModal] = useState(false);
-  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(GAME_CONFIG.TURN_TIME_SECONDS);
-  /** Chặn bắn ngay khi hết giờ, trước khi state đổi lượt kịp cập nhật */
+  const [turnTimeLeft, setTurnTimeLeft] = useState<number>(turnTimeLimit);
+  const [equippedCue, setEquippedCue] = useState<CueRow | null>(null);
   const [turnTimeoutBlockShooting, setTurnTimeoutBlockShooting] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const mobileHitSlop = useMemo(
+    () => ({ top: 14, bottom: 14, left: 14, right: 14 }),
+    [],
+  );
 
   const turnTimeoutBlockRef = useRef(false);
   const wasMovingRef = useRef(false);
+  const ballsRef = useRef(balls);
   const guestReceivedStateRef = useRef(false);
   const initialBroadcastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestStateResponseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,28 +200,99 @@ export default function BilliardGame() {
   getStateSnapshotRef.current = getStateSnapshot;
   const forceSwitchTurnRef = useRef(forceSwitchTurn);
   forceSwitchTurnRef.current = forceSwitchTurn;
+  const declarePushOutRef = useRef(declarePushOut);
+  declarePushOutRef.current = declarePushOut;
+  const choosePushOutDecisionRef = useRef(choosePushOutDecision);
+  choosePushOutDecisionRef.current = choosePushOutDecision;
+  const lastCueMoveBroadcastAtRef = useRef(0);
+  const outgoingStateSeqRef = useRef(0);
+  const latestAppliedRemoteSeqRef = useRef(0);
+  const pendingRemoteStateRef = useRef<SerializedGameState | null>(null);
+  const applyRemoteStateRafRef = useRef<number | null>(null);
+  const sendGameStateRef = useRef<() => void>(() => {});
+  const settledBetKeyRef = useRef<string | null>(null);
+  const aiTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const myPlayerNumber = isMultiplayer ? (isHost ? 1 : 2) : null;
-  const isMyTurn =
-    myPlayerNumber === null
-      ? true
-      : isHost
-        ? gameState.currentPlayer === myPlayerNumber
-        : guestReceivedStateRef.current &&
-          gameState.currentPlayer === myPlayerNumber;
+  const myPlayerNumber = isMultiplayer ? (isHost ? 1 : 2) : isAiMatch ? 1 : null;
+  const isMyTurn = !isMultiplayer
+    ? myPlayerNumber == null || gameState.currentPlayer === myPlayerNumber
+    : isHost
+      ? gameState.currentPlayer === myPlayerNumber
+      : guestReceivedStateRef.current &&
+        gameState.currentPlayer === myPlayerNumber;
 
-  // Chỉ HOST reset game khi bắt đầu trận (random ai đánh trước). Guest đợi state từ host.
+  const player1DisplayName = player1Name?.trim() || gameState.players[0].name;
+  const player2DisplayName = player2Name?.trim() || (isAiMatch ? "MĂ¡y" : gameState.players[1].name);
+
+  sendGameStateRef.current = () => {
+    if (!isHost || !isMultiplayer || !gameChannelRef.current) return;
+    outgoingStateSeqRef.current += 1;
+    const packet: GameStateBroadcastPacket = {
+      seq: outgoingStateSeqRef.current,
+      sentAt: Date.now(),
+      state: getStateSnapshotRef.current(),
+    };
+    gameChannelRef.current.send({
+      type: "broadcast",
+      event: "game_state",
+      payload: packet,
+    });
+  };
+
   useEffect(() => {
     if (!roomId) return;
+    settledBetKeyRef.current = null;
     if (isMultiplayer && !isHost) return;
     resetGame();
-  }, [roomId, isMultiplayer, isHost]);
+  }, [roomId, roomConfig?.gameMode, isMultiplayer, isHost]);
 
-  // Kênh Realtime đồng bộ game (host broadcast state, guest gửi shot)
+  useEffect(() => {
+    void ScreenOrientation.lockAsync(
+      ScreenOrientation.OrientationLock.LANDSCAPE,
+    ).catch(() => {});
+
+    return () => {
+      void ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.LANDSCAPE,
+      ).catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    ballsRef.current = balls;
+  }, [balls]);
+
+  useEffect(() => {
+    if (!isAiMatch) return;
+    if (player1Name === "Bạn" && player2Name === "Máy") return;
+    setPlayerNames("Bạn", "Máy");
+  }, [isAiMatch, player1Name, player2Name, setPlayerNames]);
+
+  useEffect(() => {
+    if (!user) {
+      setEquippedCue(null);
+      return;
+    }
+
+    getEquippedCue().then(({ cue, error }) => {
+      if (error) {
+        setEquippedCue(null);
+        return;
+      }
+      setEquippedCue(cue);
+    });
+  }, [user]);
+
   useEffect(() => {
     if (!isMultiplayer || !roomId) return;
 
-    if (!isHost) guestReceivedStateRef.current = false;
+    if (!isHost) {
+      guestReceivedStateRef.current = false;
+      latestAppliedRemoteSeqRef.current = 0;
+      pendingRemoteStateRef.current = null;
+    } else {
+      outgoingStateSeqRef.current = 0;
+    }
 
     const channel = supabase.channel(`game:${roomId}`);
     gameChannelRef.current = channel;
@@ -133,8 +300,37 @@ export default function BilliardGame() {
     channel
       .on("broadcast", { event: "game_state" }, ({ payload }) => {
         if (isHost) return;
+        const maybePacket = payload as
+          | GameStateBroadcastPacket
+          | SerializedGameState;
+        const remoteSeq =
+          typeof (maybePacket as GameStateBroadcastPacket).seq === "number"
+            ? (maybePacket as GameStateBroadcastPacket).seq
+            : null;
+        const remoteState =
+          (maybePacket as GameStateBroadcastPacket).state ??
+          (maybePacket as SerializedGameState);
+
+        if (!remoteState) return;
+        if (remoteSeq != null && remoteSeq <= latestAppliedRemoteSeqRef.current) {
+          return;
+        }
+        if (remoteSeq != null) {
+          latestAppliedRemoteSeqRef.current = remoteSeq;
+        }
+
         guestReceivedStateRef.current = true;
-        applyRemoteState(payload as Parameters<typeof applyRemoteState>[0]);
+        pendingRemoteStateRef.current = remoteState;
+
+        if (applyRemoteStateRafRef.current == null) {
+          applyRemoteStateRafRef.current = requestAnimationFrame(() => {
+            applyRemoteStateRafRef.current = null;
+            const nextState = pendingRemoteStateRef.current;
+            pendingRemoteStateRef.current = null;
+            if (!nextState) return;
+            applyRemoteState(nextState);
+          });
+        }
       })
       .on("broadcast", { event: "shot" }, ({ payload }) => {
         if (!isHost) return;
@@ -147,54 +343,74 @@ export default function BilliardGame() {
         if (cueBallX != null && cueBallY != null) {
           setCueBallPosition(cueBallX, cueBallY);
         }
-        setTimeout(() => shootCueBall(angle, p), 50);
+        setTimeout(() => {
+          shootCueBall(angle, p);
+          setTimeout(() => sendGameStateRef.current(), 16);
+        }, 50);
+      })
+      .on("broadcast", { event: "push_out" }, () => {
+        if (!isHost) return;
+        const didDeclare = declarePushOutRef.current();
+        if (didDeclare) {
+          setTimeout(() => sendGameStateRef.current(), 16);
+        }
+      })
+      .on("broadcast", { event: "push_out_decision" }, ({ payload }) => {
+        if (!isHost) return;
+        const { playFromHere } = payload as { playFromHere: boolean };
+        choosePushOutDecisionRef.current(playFromHere);
+        setTimeout(() => sendGameStateRef.current(), 16);
+      })
+      .on("broadcast", { event: "cue_ball_move" }, ({ payload }) => {
+        const { x, y, player } = payload as {
+          x: number;
+          y: number;
+          player: 1 | 2;
+        };
+        if (player === myPlayerNumber) return;
+        if (x == null || y == null) return;
+        setCueBallPosition(x, y);
       })
       .on("broadcast", { event: "timeout_switch_turn" }, () => {
         if (!isHost) return;
         forceSwitchTurnRef.current();
-        // Host đổi lượt xong cần broadcast state để guest nhận (không có bi lăn nên không có broadcast tự động)
         setTimeout(() => {
-          gameChannelRef.current?.send({
-            type: "broadcast",
-            event: "game_state",
-            payload: getStateSnapshotRef.current(),
-          });
+          sendGameStateRef.current();
         }, 100);
       })
       .on("broadcast", { event: "request_state" }, () => {
         if (!isHost) return;
-        // Trì hoãn gửi state để resetGame() đã commit (setState bất đồng bộ). Nếu gửi ngay thì getStateSnapshot() vẫn currentPlayer: 1 → hai màn hình lệch ai đánh trước.
         if (requestStateResponseTimeoutRef.current) {
           clearTimeout(requestStateResponseTimeoutRef.current);
         }
         requestStateResponseTimeoutRef.current = setTimeout(() => {
           requestStateResponseTimeoutRef.current = null;
-          gameChannelRef.current?.send({
-            type: "broadcast",
-            event: "game_state",
-            payload: getStateSnapshotRef.current(),
-          });
+          sendGameStateRef.current();
         }, 250);
       })
       .on("broadcast", { event: "game_over" }, ({ payload }) => {
-        // Xử lý khi nhận từ bên kia (vd: guest forfeit → host nhận; host thắng → guest nhận)
         const { player1Name: p1, player2Name: p2, ...result } = payload as { player1Name?: string; player2Name?: string } & Parameters<typeof applyRemoteGameResult>[0];
         if (p1 != null || p2 != null) {
           setPlayerNames(p1 ?? player1Name, p2 ?? player2Name);
+        }
+        if (isHost && roomId) {
+          const settleKey = `${roomId}:${result.winner.id}`;
+          if (settledBetKeyRef.current !== settleKey) {
+            settledBetKeyRef.current = settleKey;
+            void settleRoomBet(roomId, result.winner.id).then(({ error }) => {
+              if (error) {
+                console.warn("[BET] settle_room_bet from remote game_over failed:", error.message);
+              }
+            });
+          }
         }
         applyRemoteGameResult(result);
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
           if (isHost) {
-            // Host: gửi state SAU khi resetGame() đã áp dụng (setState bất đồng bộ)
-            // Nếu gửi ngay thì getStateSnapshot() vẫn là state cũ → guest và host lệch ai đánh trước
             initialBroadcastTimeoutRef.current = setTimeout(() => {
-              gameChannelRef.current?.send({
-                type: "broadcast",
-                event: "game_state",
-                payload: getStateSnapshotRef.current(),
-              });
+              sendGameStateRef.current();
               initialBroadcastTimeoutRef.current = null;
             }, 200);
           } else {
@@ -216,47 +432,37 @@ export default function BilliardGame() {
         clearTimeout(requestStateResponseTimeoutRef.current);
         requestStateResponseTimeoutRef.current = null;
       }
+      if (applyRemoteStateRafRef.current != null) {
+        cancelAnimationFrame(applyRemoteStateRafRef.current);
+        applyRemoteStateRafRef.current = null;
+      }
+      pendingRemoteStateRef.current = null;
       supabase.removeChannel(channel);
       gameChannelRef.current = null;
     };
-  }, [roomId, isMultiplayer, isHost]);
+  }, [roomId, isMultiplayer, isHost, myPlayerNumber]);
 
   const isMoving = isGameMoving(balls);
 
-  // Host: broadcast state ĐỊNH KỲ khi bi đang lăn để guest thấy animation. Dùng ref để mỗi lần gửi là state mới nhất (vị trí bi đang lăn), tránh closure cũ.
   useEffect(() => {
     if (!isHost || !isMultiplayer || !isMoving) return;
     wasMovingRef.current = true;
     const interval = setInterval(() => {
-      gameChannelRef.current?.send({
-        type: "broadcast",
-        event: "game_state",
-        payload: getStateSnapshotRef.current(),
-      });
-    }, 50);
+      sendGameStateRef.current();
+    }, 33);
     return () => clearInterval(interval);
   }, [isMoving, isHost, isMultiplayer]);
 
-  // Host: broadcast state khi bi dừng hẳn (lần cuối). Gửi thêm 1 lần trễ sau khi endTurn đã đổi lượt.
   useEffect(() => {
     if (!isMoving && wasMovingRef.current && isHost && isMultiplayer) {
       wasMovingRef.current = false;
-      gameChannelRef.current?.send({
-        type: "broadcast",
-        event: "game_state",
-        payload: getStateSnapshotRef.current(),
-      });
-      // endTurn chạy trong setTimeout(500ms) ở hook → gửi lại state sau ~600ms để guest nhận đúng currentPlayer (lượt mới).
+      sendGameStateRef.current();
       if (afterTurnChangeBroadcastRef.current) {
         clearTimeout(afterTurnChangeBroadcastRef.current);
       }
       afterTurnChangeBroadcastRef.current = setTimeout(() => {
         afterTurnChangeBroadcastRef.current = null;
-        gameChannelRef.current?.send({
-          type: "broadcast",
-          event: "game_state",
-          payload: getStateSnapshotRef.current(),
-        });
+        sendGameStateRef.current();
       }, 600);
     }
   }, [isMoving, isHost, isMultiplayer]);
@@ -271,14 +477,12 @@ export default function BilliardGame() {
     };
   }, []);
 
-  // Reset đồng hồ lượt và bỏ chặn bắn khi đổi người chơi
   useEffect(() => {
-    setTurnTimeLeft(GAME_CONFIG.TURN_TIME_SECONDS);
+    setTurnTimeLeft(turnTimeLimit);
     setTurnTimeoutBlockShooting(false);
     turnTimeoutBlockRef.current = false;
-  }, [gameState.currentPlayer]);
+  }, [gameState.currentPlayer, turnTimeLimit]);
 
-  // Bộ đếm giờ mỗi lượt: 15s, hết giờ thì chuyển lượt (host gọi forceSwitchTurn, guest gửi event)
   const turnTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cueBallPocketed = balls[0]?.isPocketed ?? false;
   useEffect(() => {
@@ -287,7 +491,8 @@ export default function BilliardGame() {
       !isMoving &&
       (!ballInHand || ballInHandPlaced) &&
       !showGameResult &&
-      !cueBallPocketed;
+      !cueBallPocketed &&
+      !pushOutDecisionPending;
 
     if (!canCountDown) {
       if (turnTimerIntervalRef.current) {
@@ -304,20 +509,14 @@ export default function BilliardGame() {
             clearInterval(turnTimerIntervalRef.current);
             turnTimerIntervalRef.current = null;
           }
-          // Chặn bắn ngay (ref) rồi mới đổi lượt, tránh bắn trước khi state cập nhật
           turnTimeoutBlockRef.current = true;
           setTimeout(() => {
             setTurnTimeoutBlockShooting(true);
             if (isHost || !isMultiplayer) {
               forceSwitchTurnRef.current();
-              // Host đổi lượt xong cần broadcast state để guest nhận
               if (isHost && isMultiplayer) {
                 setTimeout(() => {
-                  gameChannelRef.current?.send({
-                    type: "broadcast",
-                    event: "game_state",
-                    payload: getStateSnapshotRef.current(),
-                  });
+                  sendGameStateRef.current();
                 }, 100);
               }
             } else {
@@ -328,7 +527,7 @@ export default function BilliardGame() {
               });
             }
           }, 0);
-          return GAME_CONFIG.TURN_TIME_SECONDS;
+          return turnTimeLimit;
         }
         return prev - 1;
       });
@@ -347,31 +546,251 @@ export default function BilliardGame() {
     ballInHandPlaced,
     showGameResult,
     cueBallPocketed,
+    pushOutDecisionPending,
     isHost,
     isMultiplayer,
+    turnTimeLimit,
   ]);
 
   const cueBall = balls[0];
 
+  const broadcastCueBallMove = (x: number, y: number) => {
+    if (!isMultiplayer || !gameChannelRef.current || myPlayerNumber == null) {
+      return;
+    }
+    if (!isMyTurn || !ballInHand) return;
+
+    const now = Date.now();
+    if (now - lastCueMoveBroadcastAtRef.current < 33) return;
+    lastCueMoveBroadcastAtRef.current = now;
+
+    gameChannelRef.current.send({
+      type: "broadcast",
+      event: "cue_ball_move",
+      payload: { x, y, player: myPlayerNumber },
+    });
+  };
+
   const handleShoot = (angle: number, power: number) => {
     if (turnTimeoutBlockRef.current) return;
     if (turnTimeoutBlockShooting) return;
-    setTurnTimeLeft(GAME_CONFIG.TURN_TIME_SECONDS);
+    if (pushOutDecisionPending) return;
+    setTurnTimeLeft(turnTimeLimit);
+
+    const forceStat = equippedCue?.force ?? 35;
+    const controlStat = equippedCue?.control ?? 35;
+    const forceMultiplier = 0.85 + (forceStat / 100) * 0.55;
+    const controlMultiplier = 0.95 + (controlStat / 100) * 0.1;
+    const modePowerBoost = isThreeCushionMode
+      ? GAME_CONFIG.THREE_CUSHION_POWER_BOOST
+      : 1;
+    const maxPowerMultiplier = isThreeCushionMode
+      ? GAME_CONFIG.THREE_CUSHION_MAX_POWER_MULTIPLIER
+      : 1.6;
+    const adjustedPower = Math.min(
+      GAME_CONFIG.MAX_POWER * maxPowerMultiplier,
+      power * forceMultiplier * controlMultiplier * modePowerBoost,
+    );
+
     if (isHost || !isMultiplayer) {
-      shootCueBall(angle, power);
+      shootCueBall(angle, adjustedPower);
+      if (isHost && isMultiplayer) {
+        setTimeout(() => sendGameStateRef.current(), 16);
+      }
     } else {
       gameChannelRef.current?.send({
         type: "broadcast",
         event: "shot",
         payload: {
           angle,
-          power,
+          power: adjustedPower,
           cueBallX: cueBall.x,
           cueBallY: cueBall.y,
         },
       });
     }
   };
+
+  const handleDeclarePushOut = () => {
+    if (!isNineBallMode) return;
+    if (pushOutAvailableFor !== gameState.currentPlayer) return;
+    if (isMoving || turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
+
+    if (isHost || !isMultiplayer) {
+      const didDeclare = declarePushOut();
+      if (didDeclare && isHost && isMultiplayer) {
+        setTimeout(() => sendGameStateRef.current(), 16);
+      }
+      return;
+    }
+
+    gameChannelRef.current?.send({
+      type: "broadcast",
+      event: "push_out",
+      payload: {},
+    });
+  };
+
+  const handleChoosePushOutDecision = (playFromHere: boolean) => {
+    if (!pushOutDecisionPending) return;
+    if (pushOutDecisionPending.decider !== gameState.currentPlayer) return;
+
+    if (isHost || !isMultiplayer) {
+      choosePushOutDecision(playFromHere);
+      if (isHost && isMultiplayer) {
+        setTimeout(() => sendGameStateRef.current(), 16);
+      }
+      return;
+    }
+
+    gameChannelRef.current?.send({
+      type: "broadcast",
+      event: "push_out_decision",
+      payload: { playFromHere },
+    });
+  };
+
+  const findAiCueBallPlacement = (currentBalls: Ball[]) => {
+    const minX = BALL_RADIUS + 10;
+    const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
+    const minY = BALL_RADIUS + 10;
+    const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
+
+    for (let i = 0; i < 40; i++) {
+      const x = minX + Math.random() * (maxX - minX);
+      const y = minY + Math.random() * (maxY - minY);
+      const collides = currentBalls.some((ball) => {
+        if (ball.id === 0 || ball.isPocketed) return false;
+        const dx = x - ball.x;
+        const dy = y - ball.y;
+        return Math.sqrt(dx * dx + dy * dy) < BALL_RADIUS * 2;
+      });
+      if (!collides) {
+        return { x, y };
+      }
+    }
+
+    return { x: 175, y: 300 };
+  };
+
+  const pickAiTargetBall = (currentBalls: Ball[]) => {
+    const aiPlayer = gameState.players[1];
+    const cue = currentBalls[0];
+    if (!cue) return null;
+
+    const hasRemainingOwnBalls = currentBalls.some((ball) => {
+      if (ball.isPocketed || ball.id === 0 || ball.id === 8) return false;
+      if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
+      if (aiPlayer.ballType === "striped") return ball.id >= 9 && ball.id <= 15;
+      return true;
+    });
+
+    const legalBalls = currentBalls.filter((ball) => {
+      if (ball.isPocketed || ball.id === 0) return false;
+
+      if (aiPlayer.ballType === "none") {
+        return ball.id !== 8;
+      }
+
+      if (!hasRemainingOwnBalls) {
+        return ball.id === 8;
+      }
+
+      if (ball.id === 8) return false;
+      if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
+      return ball.id >= 9 && ball.id <= 15;
+    });
+
+    const candidates =
+      legalBalls.length > 0
+        ? legalBalls
+        : currentBalls.filter((ball) => !ball.isPocketed && ball.id !== 0);
+
+    if (candidates.length === 0) return null;
+
+    const nearest = [...candidates]
+      .sort((a, b) => {
+        const da = Math.hypot(a.x - cue.x, a.y - cue.y);
+        const db = Math.hypot(b.x - cue.x, b.y - cue.y);
+        return da - db;
+      })
+      .slice(0, Math.min(3, candidates.length));
+
+    return nearest[Math.floor(Math.random() * nearest.length)] ?? nearest[0];
+  };
+
+  useEffect(() => {
+    if (!isAiMatch) return;
+
+    const aiTurn = gameState.currentPlayer === 2;
+    const canAct =
+      aiTurn &&
+      !showGameResult &&
+      !isMoving &&
+      !pushOutDecisionPending &&
+      !turnTimeoutBlockRef.current &&
+      !turnTimeoutBlockShooting;
+
+    if (!canAct) {
+      if (aiTurnTimeoutRef.current) {
+        clearTimeout(aiTurnTimeoutRef.current);
+        aiTurnTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (aiTurnTimeoutRef.current) return;
+
+    const thinkDelayMs = 700 + Math.floor(Math.random() * 700);
+    aiTurnTimeoutRef.current = setTimeout(() => {
+      aiTurnTimeoutRef.current = null;
+
+      if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
+
+      const shootNow = () => {
+        const currentBalls = ballsRef.current;
+        const cueBallNow = currentBalls[0];
+        if (!cueBallNow || cueBallNow.isPocketed) return;
+
+        const targetBall = pickAiTargetBall(currentBalls);
+        const baseAngle = targetBall
+          ? Math.atan2(targetBall.y - cueBallNow.y, targetBall.x - cueBallNow.x)
+          : Math.random() * Math.PI * 2;
+        const angle = baseAngle + (Math.random() - 0.5) * 0.16;
+        const distance = targetBall
+          ? Math.hypot(targetBall.x - cueBallNow.x, targetBall.y - cueBallNow.y)
+          : 180;
+        const rawPower = 5.5 + distance * 0.03 + Math.random() * 2.6;
+        const power = Math.max(5, Math.min(16, rawPower));
+        handleShoot(angle, power);
+      };
+
+      if (ballInHand) {
+        const placement = findAiCueBallPlacement(ballsRef.current);
+        moveCueBall(placement.x, placement.y);
+        setTimeout(shootNow, 140);
+        return;
+      }
+
+      shootNow();
+    }, thinkDelayMs);
+
+    return () => {
+      if (aiTurnTimeoutRef.current) {
+        clearTimeout(aiTurnTimeoutRef.current);
+        aiTurnTimeoutRef.current = null;
+      }
+    };
+  }, [
+    isAiMatch,
+    gameState.currentPlayer,
+    gameState.players,
+    showGameResult,
+    isMoving,
+    ballInHand,
+    pushOutDecisionPending,
+    turnTimeoutBlockShooting,
+  ]);
 
   const {
     aimAngle,
@@ -388,10 +807,18 @@ export default function BilliardGame() {
     isMoving,
     cueBall,
     onShoot: handleShoot,
-    canPlay: isMyTurn && !turnTimeoutBlockShooting,
+    canPlay: isMyTurn && !turnTimeoutBlockShooting && !pushOutDecisionPending,
+    sliderHeight: tableLayout.sliderHeight,
   });
 
   const currentPlayer = gameState.players[gameState.currentPlayer - 1];
+  const lowestBallOnTable = balls
+    .filter((b) => b.id > 0 && !b.isPocketed)
+    .reduce<number | null>((lowest, ball) => {
+      if (lowest == null) return ball.id;
+      return Math.min(lowest, ball.id);
+    }, null);
+  const remainingObjectBalls = balls.filter((b) => b.id > 0 && !b.isPocketed).length;
 
   const { aimEndX, aimEndY } = calculateAimLine(cueBall, aimAngle);
   const predictionDots = calculatePredictionDots(cueBall, aimAngle);
@@ -412,17 +839,36 @@ export default function BilliardGame() {
     : null;
 
   const powerLevel = getPowerLevel(power);
+  const cueTheme = getCueVisualTheme(equippedCue);
+  const cueDx = cueEndX - cueStartX;
+  const cueDy = cueEndY - cueStartY;
+  const wrapStartX = cueStartX + cueDx * 0.5;
+  const wrapStartY = cueStartY + cueDy * 0.5;
+  const wrapEndX = cueStartX + cueDx * 0.82;
+  const wrapEndY = cueStartY + cueDy * 0.82;
+  const accentStartX = cueStartX + cueDx * 0.18;
+  const accentStartY = cueStartY + cueDy * 0.18;
+  const accentEndX = cueStartX + cueDx * 0.93;
+  const accentEndY = cueStartY + cueDy * 0.93;
 
   const statusMessage = !isMyTurn
-    ? `⏳ Đang chờ lượt đối thủ (${currentPlayer.name})...`
-    : cueBall.isPocketed
-      ? GAME_MESSAGES.CUE_BALL_IN_HOLE
-      : ballInHand
-        ? `${currentPlayer.name} - 🎯 Kéo bi trắng để đặt | Kéo ngoài để nhắm`
+    ? `Đang chờ lượt đối thủ (${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName})...`
+    : ballInHand
+        ? `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Kéo bi trắng để đặt | Kéo bên ngoài để ngắm`
         : isMoving
           ? GAME_MESSAGES.BALLS_MOVING
-          : `${currentPlayer.name} - ${GAME_MESSAGES.READY_TO_AIM}`;
+          : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - ${GAME_MESSAGES.READY_TO_AIM}`;
 
+  const statusMessageWithPushOut =
+    pushOutDecisionPending &&
+    pushOutDecisionPending.decider === gameState.currentPlayer
+      ? "Push Out: chọn Đánh tiếp hoặc Trả lượt."
+      : isNineBallMode &&
+          pushOutAvailableFor === gameState.currentPlayer &&
+          !isMoving &&
+          !showGameResult
+        ? "Bạn có thể khai báo Push Out ở lượt này."
+        : statusMessage;
   const targetIsWrong = closestTarget ? isWrongBall(closestTarget.ball) : false;
   const aimColor = targetIsWrong ? "#FF0000" : currentPlayer.color;
 
@@ -447,6 +893,114 @@ export default function BilliardGame() {
           b.id >= 9 &&
           b.id <= 15)),
   ).length;
+  const nineBallProgressText =
+    lowestBallOnTable == null
+      ? "Đã dọn hết bi mục tiêu"
+      : `Mục tiêu: bi ${lowestBallOnTable} (${remainingObjectBalls} bi còn lại)`;
+  const player1BallTypeText = isNineBallMode
+    ? nineBallProgressText
+    : isThreeCushionMode
+      ? "Mục tiêu: carom đủ 3 băng"
+    : gameState.players[0].ballType === "none"
+      ? "Chưa phân bi"
+      : gameState.players[0].ballType === "solid"
+        ? `Bi màu 1-7 (${player1Balls})`
+        : `Bi khoang 9-15 (${player1Balls})`;
+  const player2BallTypeText = isNineBallMode
+    ? nineBallProgressText
+    : isThreeCushionMode
+      ? "Mục tiêu: carom đủ 3 băng"
+    : gameState.players[1].ballType === "none"
+      ? "Chưa phân bi"
+      : gameState.players[1].ballType === "solid"
+        ? `Bi màu 1-7 (${player2Balls})`
+        : `Bi khoang 9-15 (${player2Balls})`;
+  const isEightBallMode = !isNineBallMode && !isThreeCushionMode;
+  const progressSlotCount = isEightBallMode ? 7 : 9;
+  const player1ProgressValue = isEightBallMode
+    ? Math.max(0, Math.min(7, 7 - player1Balls))
+    : Math.max(0, Math.min(progressSlotCount, gameState.players[0].score));
+  const player2ProgressValue = isEightBallMode
+    ? Math.max(0, Math.min(7, 7 - player2Balls))
+    : Math.max(0, Math.min(progressSlotCount, gameState.players[1].score));
+
+  const renderProgressDots = (filled: number, activeColor: string) =>
+    Array.from({ length: progressSlotCount }).map((_, idx) => (
+      <View
+        key={`progress-${idx}`}
+        style={[
+          styles.hudProgressDot,
+          idx < filled && {
+            backgroundColor: activeColor,
+            borderColor: activeColor,
+          },
+        ]}
+      />
+    ));
+
+  const canDeclarePushOut =
+    isNineBallMode &&
+    isMyTurn &&
+    !isMoving &&
+    !showGameResult &&
+    !turnTimeoutBlockShooting &&
+    !pushOutDecisionPending &&
+    pushOutAvailableFor === gameState.currentPlayer;
+  const canChoosePushOutDecision =
+    isNineBallMode &&
+    !!pushOutDecisionPending &&
+    isMyTurn &&
+    !isMoving &&
+    !showGameResult &&
+    pushOutDecisionPending.decider === gameState.currentPlayer;
+
+  const normalizeTableEvent = useCallback(
+    (event: any) => {
+      const nativeEvent = event?.nativeEvent;
+      if (!nativeEvent) return event;
+
+      const normalize = (value: unknown, factor: number) =>
+        typeof value === "number" ? value * factor : value;
+
+      const normalizedTouches = Array.isArray(nativeEvent.touches)
+        ? nativeEvent.touches.map((touch: Record<string, unknown>) => ({
+            ...touch,
+            locationX: normalize(touch.locationX, tableLayout.tableScaleX),
+            locationY: normalize(touch.locationY, tableLayout.tableScaleY),
+          }))
+        : nativeEvent.touches;
+
+      return {
+        ...event,
+        nativeEvent: {
+          ...nativeEvent,
+          locationX: normalize(nativeEvent.locationX, tableLayout.tableScaleX),
+          locationY: normalize(nativeEvent.locationY, tableLayout.tableScaleY),
+          touches: normalizedTouches,
+        },
+      };
+    },
+    [tableLayout.tableScaleX, tableLayout.tableScaleY],
+  );
+
+  const getTableTouchCoordinates = useCallback(
+    (event: any) => getTouchCoordinates(normalizeTableEvent(event)),
+    [normalizeTableEvent],
+  );
+
+  const handleTableTouchStartScaled = useCallback(
+    (event: any) => {
+      handleTableTouchStart(normalizeTableEvent(event));
+    },
+    [handleTableTouchStart, normalizeTableEvent],
+  );
+
+  const handleTableTouchMoveScaled = useCallback(
+    (event: any) => {
+      handleTableTouchMove(normalizeTableEvent(event));
+    },
+    [handleTableTouchMove, normalizeTableEvent],
+  );
 
   const isTouchOnCueBall = (touchX: number, touchY: number): boolean => {
     const dx = touchX - cueBall.x;
@@ -455,25 +1009,20 @@ export default function BilliardGame() {
     return distance <= BALL_RADIUS + 15;
   };
 
-  // ✅ HÀM XỬ LÝ KHI BẤM NÚT LOBBY - HIỆN MODAL
   const handleBackToLobbyButton = () => {
     setShowExitModal(true);
   };
 
-  // ✅ SỬA: Hàm confirmExitGame để xử lý forfeit
   const confirmExitGame = () => {
     setShowExitModal(false);
 
-    // ✅ Kiểm tra game đang chơi: có bi đang lăn HOẶC còn bi chưa vào lỗ (ngoài bi trắng)
     const gameInProgress =
       balls.some((b) => Math.abs(b.vx) > 0.01 || Math.abs(b.vy) > 0.01) ||
       balls.some((b) => !b.isPocketed && b.id !== 0);
 
     if (gameInProgress) {
-      // Game đang chơi → Người bấm rời bàn là người thua
       handleForfeit((myPlayerNumber ?? 1) as 1 | 2);
     } else {
-      // Game đã kết thúc → Về lobby bình thường
       resetGame();
       router.push("/");
     }
@@ -497,28 +1046,30 @@ export default function BilliardGame() {
   };
 
   const handleCueBallTouchStart = (event: any) => {
-    if (!isMyTurn) return; // Chỉ người đang có lượt (và ball in hand) mới được kéo/nhắm
+    if (!isMyTurn) return; // Chỉ người đang có lượt (và ball in hand) mới được kéo/ngắm
     if (!ballInHand) return;
+    if (pushOutDecisionPending) return;
     if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
 
-    const { touchX, touchY } = getTouchCoordinates(event);
+    const { touchX, touchY } = getTableTouchCoordinates(event);
     const onCueBall = isTouchOnCueBall(touchX, touchY);
 
     if (onCueBall) {
       setIsDraggingCueBall(true);
     } else {
       setIsAimingInBallInHand(true);
-      handleTableTouchStart(event);
+      handleTableTouchStartScaled(event);
     }
   };
 
   const handleCueBallTouchMove = (event: any) => {
     if (!isMyTurn) return;
     if (!ballInHand) return;
+    if (pushOutDecisionPending) return;
     if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
 
     if (isDraggingCueBall) {
-      const { touchX, touchY } = getTouchCoordinates(event);
+      const { touchX, touchY } = getTableTouchCoordinates(event);
 
       const minX = BALL_RADIUS + 10;
       const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
@@ -540,16 +1091,22 @@ export default function BilliardGame() {
 
       if (!wouldCollide) {
         moveCueBall(clampedX, clampedY);
+        broadcastCueBallMove(clampedX, clampedY);
       }
     } else if (isAimingInBallInHand) {
-      handleTableTouchMove(event);
+      handleTableTouchMoveScaled(event);
     }
   };
 
   const handleCueBallTouchEnd = () => {
     if (!isMyTurn) return;
+    if (pushOutDecisionPending) return;
     if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
+    const wasDraggingCueBall = isDraggingCueBall;
     setIsDraggingCueBall(false);
+    if (wasDraggingCueBall) {
+      broadcastCueBallMove(cueBall.x, cueBall.y);
+    }
 
     if (isAimingInBallInHand) {
       setIsAimingInBallInHand(false);
@@ -566,104 +1123,80 @@ export default function BilliardGame() {
       }
     : {
         onStartShouldSetResponder: () => true,
-        onResponderGrant: handleTableTouchStart,
-        onResponderMove: handleTableTouchMove,
+        onResponderGrant: handleTableTouchStartScaled,
+        onResponderMove: handleTableTouchMoveScaled,
         onResponderRelease: handleTableTouchEnd,
       };
 
-  // ⚠️ TIẾP TỤC PHẦN 2/2// app/(tabs)/index.tsx - PHẦN 2/2 (TIẾP TỤC TỪ PHẦN 1)
 
   return (
     <View style={styles.container}>
-      {/* ✅ NÚT BACK TO LOBBY VỚI MODAL */}
-      <TouchableOpacity
-        style={styles.backButton}
-        onPress={handleBackToLobbyButton}
-      >
-        <Text style={styles.backButtonText}>← Lobby</Text>
-      </TouchableOpacity>
+      <View style={styles.hudTopBar}>
+        <TouchableOpacity
+          style={styles.hudActionButton}
+          onPress={handleBackToLobbyButton}
+          hitSlop={mobileHitSlop}
+          pressRetentionOffset={mobileHitSlop}
+        >
+          <Text style={styles.hudActionIcon}>OUT</Text>
+        </TouchableOpacity>
 
-      <View style={styles.header}>
-        <Text style={styles.title}>🎱 Bi-a 2 Người Chơi</Text>
-
-        <View style={styles.playersContainer}>
+        <View style={styles.hudCenter}>
           <View
             style={[
-              styles.playerCard,
-              {
-                borderColor:
-                  gameState.currentPlayer === 1 ? currentPlayer.color : "#666",
-                backgroundColor:
-                  gameState.currentPlayer === 1
-                    ? "rgba(76, 175, 80, 0.1)"
-                    : "#1a1a1a",
-              },
+              styles.hudPlayerPanel,
+              gameState.currentPlayer === 1 && styles.hudPlayerPanelActive,
             ]}
           >
-            <Text
-              style={[styles.playerName, { color: gameState.players[0].color }]}
-            >
-              {gameState.currentPlayer === 1 && "▶ "}
-              {gameState.players[0].name}
-            </Text>
-            <Text style={styles.playerScore}>
-              Điểm: {gameState.players[0].score}
-            </Text>
-            <Text style={styles.playerBallType}>
-              {gameState.players[0].ballType === "none"
-                ? "Chưa chọn"
-                : gameState.players[0].ballType === "solid"
-                  ? `🔴 Bi màu 1-7 (${player1Balls})`
-                  : `🟣 Bi khoang 9-15 (${player1Balls})`}
-            </Text>
+            <View style={[styles.hudAvatar, styles.hudAvatarBlue]} />
+            <View style={styles.hudPlayerContent}>
+              <Text style={styles.hudPlayerLabel} numberOfLines={1}>
+                {player1DisplayName}
+              </Text>
+              <View style={styles.hudProgressRow}>
+                {renderProgressDots(player1ProgressValue, "#16d9ff")}
+              </View>
+            </View>
           </View>
 
+          <Text style={styles.hudVsText}>VS</Text>
+
           <View
             style={[
-              styles.playerCard,
-              {
-                borderColor:
-                  gameState.currentPlayer === 2 ? currentPlayer.color : "#666",
-                backgroundColor:
-                  gameState.currentPlayer === 2
-                    ? "rgba(33, 150, 243, 0.1)"
-                    : "#1a1a1a",
-              },
+              styles.hudPlayerPanel,
+              gameState.currentPlayer === 2 && styles.hudPlayerPanelActive,
             ]}
           >
-            <Text
-              style={[styles.playerName, { color: gameState.players[1].color }]}
-            >
-              {gameState.currentPlayer === 2 && "▶ "}
-              {gameState.players[1].name}
-            </Text>
-            <Text style={styles.playerScore}>
-              Điểm: {gameState.players[1].score}
-            </Text>
-            <Text style={styles.playerBallType}>
-              {gameState.players[1].ballType === "none"
-                ? "Chưa chọn"
-                : gameState.players[1].ballType === "solid"
-                  ? `🔴 Bi màu 1-7 (${player2Balls})`
-                  : `🟣 Bi khoang 9-15 (${player2Balls})`}
-            </Text>
+            <View style={[styles.hudAvatar, styles.hudAvatarPink]} />
+            <View style={styles.hudPlayerContent}>
+              <Text style={styles.hudPlayerLabel} numberOfLines={1}>
+                {player2DisplayName}
+              </Text>
+              <View style={styles.hudProgressRow}>
+                {renderProgressDots(player2ProgressValue, "#ff4f93")}
+              </View>
+            </View>
           </View>
         </View>
+
+        <TouchableOpacity
+          style={styles.hudActionButton}
+          onPress={() => setIsMuted((prev) => !prev)}
+          hitSlop={mobileHitSlop}
+          pressRetentionOffset={mobileHitSlop}
+        >
+          <Text style={styles.hudActionIcon}>{isMuted ? "MUTE" : "SOUND"}</Text>
+        </TouchableOpacity>
       </View>
 
-      {message && (
-        <View style={styles.messageBox}>
-          <Text style={styles.messageText}>{message}</Text>
-        </View>
-      )}
-
-      <View style={styles.statusRow}>
-        <Text style={styles.status}>{statusMessage}</Text>
-        <View style={styles.timerBox}>
-          <Text style={styles.timerLabel}>⏱</Text>
+      <View style={styles.statusPill}>
+        <Text style={styles.statusPillText} numberOfLines={1}>
+          {statusMessageWithPushOut}
+        </Text>
+        <View style={styles.timerBadge}>
           <Text
             style={[
-              styles.timerValue,
+              styles.timerBadgeValue,
               turnTimeLeft <= 5 && isMyTurn && styles.timerValueUrgent,
             ]}
           >
@@ -675,14 +1208,28 @@ export default function BilliardGame() {
       {ballInHand && isMyTurn && (
         <View style={styles.ballInHandNotice}>
           <Text style={styles.ballInHandText}>
-            ✋ KÉO BI TRẮNG ĐỂ ĐẶT | KÉO NGOÀI ĐỂ NHẮM
+            KEO BI TRANG DE DAT, KEO NGOAI BI DE NGAM
           </Text>
         </View>
       )}
 
       <View style={styles.gameArea}>
-        <View style={styles.tableContainer} {...handleTableTouch}>
-          <Svg width={TABLE_WIDTH} height={TABLE_HEIGHT}>
+        <View
+          style={[
+            styles.tableContainer,
+            {
+              padding: tableLayout.tablePadding,
+              width: tableLayout.renderedTableWidth + tableLayout.tablePadding * 2,
+              height: tableLayout.renderedTableHeight + tableLayout.tablePadding * 2,
+            },
+          ]}
+          {...handleTableTouch}
+        >
+          <Svg
+            width={tableLayout.renderedTableWidth}
+            height={tableLayout.renderedTableHeight}
+            viewBox={`0 0 ${TABLE_WIDTH} ${TABLE_HEIGHT}`}
+          >
             <Defs>
               <RadialGradient id="pocketGradient">
                 <Stop offset="0%" stopColor="#000" stopOpacity="1" />
@@ -695,33 +1242,35 @@ export default function BilliardGame() {
               y={0}
               width={TABLE_WIDTH}
               height={TABLE_HEIGHT}
-              fill="#0d5c2d"
-              stroke="#8B4513"
-              strokeWidth={10}
+              fill="#4fb5e7"
+              stroke="#7f2a14"
+              strokeWidth={16}
             />
 
-            {POCKETS.map((pocket, index) => (
-              <React.Fragment key={index}>
-                <Circle
-                  cx={pocket.x}
-                  cy={pocket.y}
-                  r={pocket.radius + 2}
-                  fill="#000"
-                  opacity={0.5}
-                />
-                <Circle
-                  cx={pocket.x}
-                  cy={pocket.y}
-                  r={pocket.radius}
-                  fill="url(#pocketGradient)"
-                  stroke="#000"
-                  strokeWidth={2}
-                />
-              </React.Fragment>
-            ))}
+            {!isThreeCushionMode &&
+              POCKETS.map((pocket, index) => (
+                <React.Fragment key={index}>
+                  <Circle
+                    cx={pocket.x}
+                    cy={pocket.y}
+                    r={pocket.radius + 2}
+                    fill="#000"
+                    opacity={0.5}
+                  />
+                  <Circle
+                    cx={pocket.x}
+                    cy={pocket.y}
+                    r={pocket.radius}
+                    fill="url(#pocketGradient)"
+                    stroke="#000"
+                    strokeWidth={2}
+                  />
+                </React.Fragment>
+              ))}
 
             {isMyTurn &&
               !isMoving &&
+              !pushOutDecisionPending &&
               !cueBall.isPocketed &&
               (!ballInHand || (ballInHand && ballInHandPlaced)) && (
                 <>
@@ -887,7 +1436,7 @@ export default function BilliardGame() {
                         fill="#FFFFFF"
                         pointerEvents="none"
                       />
-                      <text
+                      <SvgText
                         x={ball.x}
                         y={ball.y + 3}
                         fontSize="8"
@@ -897,7 +1446,7 @@ export default function BilliardGame() {
                         pointerEvents="none"
                       >
                         {ball.id}
-                      </text>
+                      </SvgText>
                     </>
                   )}
 
@@ -931,6 +1480,7 @@ export default function BilliardGame() {
 
             {isMyTurn &&
               !isMoving &&
+              !pushOutDecisionPending &&
               !cueBall.isPocketed &&
               (!ballInHand || (ballInHand && ballInHandPlaced)) && (
                 <>
@@ -949,8 +1499,8 @@ export default function BilliardGame() {
                     y1={cueStartY}
                     x2={cueEndX}
                     y2={cueEndY}
-                    stroke="#654321"
-                    strokeWidth={7}
+                    stroke={cueTheme.outlineColor}
+                    strokeWidth={8}
                     strokeLinecap="round"
                   />
                   <Line
@@ -958,20 +1508,43 @@ export default function BilliardGame() {
                     y1={cueStartY}
                     x2={cueEndX}
                     y2={cueEndY}
-                    stroke="#8B4513"
+                    stroke={cueTheme.bodyColor}
                     strokeWidth={5}
                     strokeLinecap="round"
                   />
-                  <Circle cx={cueStartX} cy={cueStartY} r={3} fill="#E8E8E8" />
+                  <Line
+                    x1={wrapStartX}
+                    y1={wrapStartY}
+                    x2={wrapEndX}
+                    y2={wrapEndY}
+                    stroke={cueTheme.wrapColor}
+                    strokeWidth={5.5}
+                    strokeLinecap="round"
+                  />
+                  <Line
+                    x1={accentStartX}
+                    y1={accentStartY}
+                    x2={accentEndX}
+                    y2={accentEndY}
+                    stroke={cueTheme.accentColor}
+                    strokeWidth={1.6}
+                    strokeDasharray={
+                      cueTheme.accentDash !== "0,0" ? cueTheme.accentDash : undefined
+                    }
+                    opacity={0.95}
+                  />
+                  <Circle cx={cueStartX} cy={cueStartY} r={4} fill={cueTheme.ferruleColor} />
+                  <Circle cx={cueStartX} cy={cueStartY} r={2.3} fill={cueTheme.tipColor} />
+                  <Circle cx={cueEndX} cy={cueEndY} r={2.6} fill={cueTheme.buttColor} />
                 </>
               )}
           </Svg>
         </View>
 
-        {isMyTurn ? (
+        {isMyTurn && !pushOutDecisionPending ? (
           <View style={styles.powerSliderContainer}>
             <View
-              style={styles.powerSlider}
+              style={[styles.powerSlider, { height: tableLayout.sliderHeight }]}
               onStartShouldSetResponder={() => true}
               onResponderGrant={handlePowerTouchStart}
               onResponderMove={handlePowerTouchMove}
@@ -1005,10 +1578,18 @@ export default function BilliardGame() {
           </View>
         ) : (
           <View style={styles.powerSliderContainer}>
-            <View style={styles.waitingTurnBox}>
-              <Text style={styles.waitingTurnText}>⏳ Chờ lượt đối thủ</Text>
+            <View style={[styles.waitingTurnBox, { minHeight: tableLayout.sliderHeight }]}>
+              <Text style={styles.waitingTurnText}>
+                {pushOutDecisionPending
+                  ? "Đang chờ chọn Push Out"
+                  : isAiMatch
+                    ? "Máy đang đánh"
+                    : "Đang chờ đối thủ"}
+              </Text>
               <Text style={styles.waitingTurnSubtext}>
-                Không hiện thanh lực khi không tới lượt
+                {pushOutDecisionPending
+                  ? "Bạn cần chọn Đánh tiếp hoặc Trả lượt"
+                  : "Thanh lực sẽ ẩn khi không phải lượt của bạn"}
               </Text>
             </View>
           </View>
@@ -1016,46 +1597,96 @@ export default function BilliardGame() {
       </View>
 
       <View style={styles.controls}>
+        {canDeclarePushOut && (
+          <TouchableOpacity
+            style={[styles.button, styles.pushOutButton]}
+            onPress={handleDeclarePushOut}
+            hitSlop={mobileHitSlop}
+            pressRetentionOffset={mobileHitSlop}
+          >
+            <Text style={styles.buttonText}>Push Out</Text>
+          </TouchableOpacity>
+        )}
+
+        {canChoosePushOutDecision && (
+          <View style={styles.pushOutDecisionRow}>
+            <TouchableOpacity
+              style={[styles.button, styles.pushOutDecisionPrimary]}
+              onPress={() => handleChoosePushOutDecision(true)}
+              hitSlop={mobileHitSlop}
+              pressRetentionOffset={mobileHitSlop}
+            >
+              <Text style={styles.buttonText}>Đánh tiếp</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, styles.pushOutDecisionSecondary]}
+              onPress={() => handleChoosePushOutDecision(false)}
+              hitSlop={mobileHitSlop}
+              pressRetentionOffset={mobileHitSlop}
+            >
+              <Text style={styles.buttonText}>Trả lượt</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {!isMultiplayer && (
-          <TouchableOpacity style={styles.button} onPress={resetGame}>
-            <Text style={styles.buttonText}>🔄 Chơi lại</Text>
+          <TouchableOpacity
+            style={styles.button}
+            onPress={resetGame}
+            hitSlop={mobileHitSlop}
+            pressRetentionOffset={mobileHitSlop}
+          >
+            <Text style={styles.buttonText}>Chơi lại</Text>
           </TouchableOpacity>
         )}
 
         <View style={styles.infoBox}>
           <Text style={styles.infoText}>
-            ✨ {currentPlayer.name} | Vàng = chưa đặt | Xanh = đã đặt
+            Gậy: {getCueNameVi(equippedCue)} | Lực {equippedCue?.force ?? 35} | Kiểm soát {equippedCue?.control ?? 35}
           </Text>
           <Text style={styles.infoText}>
-            🎯 Bi màu (1-7) vs Bi khoang (9-15)
+            {gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} | Vàng = chưa đặt | Xanh = đã đặt
           </Text>
           <Text style={styles.infoText}>
-            ⚫ Bi 8 đánh cuối | Bi trắng → Ball in hand (phải chạm bi khác)
+            {isThreeCushionMode
+              ? "3 băng: chạm 2 bi mục tiêu, đủ ít nhất 3 băng trước bi thứ hai"
+              : isNineBallMode
+              ? "9 bi: luôn chạm bi có số nhỏ nhất trước"
+              : "Bi màu (1-7) vs Bi khoang (9-15)"}
+          </Text>
+          <Text style={styles.infoText}>
+            {isThreeCushionMode
+              ? `Mốc thắng: ${GAME_CONFIG.THREE_CUSHION_TARGET_POINTS} điểm`
+              : isNineBallMode
+              ? "Push Out chỉ dùng sau phá hợp lệ | Bi trắng lỗi: đối thủ được đặt bi tự do"
+              : "Đánh bi 8 cuối cùng | Phạm lỗi bi trắng: đối thủ được đặt bi tự do"}
           </Text>
         </View>
       </View>
 
-      {/* ✅ GAME RESULT SCREEN */}
       {gameResult && (() => {
         const winner = gameResult.winner;
         const loser = gameResult.loser;
         const isWinnerMe = !isMultiplayer ? winner.id === 1 : (winner.id === 1 && isHost) || (winner.id === 2 && !isHost);
         const isLoserMe = !isMultiplayer ? loser.id === 1 : (loser.id === 1 && isHost) || (loser.id === 2 && !isHost);
-        const displayWinnerName = isWinnerMe ? "Bạn" : (winner.id === 1 ? player1Name : player2Name);
-        const displayLoserName = isLoserMe ? "Bạn" : (loser.id === 1 ? player1Name : player2Name);
+        const betAmount = isAiMatch ? 0 : Math.max(0, Number(roomConfig?.betAmount ?? 0));
+        const myCoinDelta = betAmount > 0 ? (isWinnerMe ? betAmount : -betAmount) : 0;
+        const displayWinnerName = isWinnerMe ? "Bạn" : (winner.id === 1 ? player1DisplayName : player2DisplayName);
+        const displayLoserName = isLoserMe ? "Bạn" : (loser.id === 1 ? player1DisplayName : player2DisplayName);
         return (
           <GameResultScreen
             visible={showGameResult}
             winner={{ ...winner, name: displayWinnerName }}
             loser={{ ...loser, name: displayLoserName }}
             gameStats={gameResult.gameStats}
+            betAmount={betAmount}
+            myCoinDelta={myCoinDelta}
             onBackToLobby={handleBackToLobby}
             onExit={handleExitGame}
           />
         );
       })()}
 
-      {/* ✅ MODAL XÁC NHẬN RỜI BÀN */}
       <Modal
         visible={showExitModal}
         transparent={true}
@@ -1064,15 +1695,15 @@ export default function BilliardGame() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>🚪 Rời bàn bi-a</Text>
+            <Text style={styles.modalTitle}>Rời bàn đấu</Text>
 
             <Text style={styles.modalMessage}>
-              Bạn có chắc chắn muốn rời bàn?
+              Bạn có chắc chắn muốn rời bàn không?
             </Text>
 
             <View style={styles.modalWarning}>
               <Text style={styles.modalWarningText}>
-                ⚠️ Bạn sẽ bị xử THUA nếu rời giữa chừng!
+                Bạn sẽ THUA nếu rời giữa trận!
               </Text>
             </View>
 
@@ -1080,15 +1711,19 @@ export default function BilliardGame() {
               <TouchableOpacity
                 style={styles.modalButtonCancel}
                 onPress={cancelExitGame}
+                hitSlop={mobileHitSlop}
+                pressRetentionOffset={mobileHitSlop}
               >
-                <Text style={styles.modalButtonCancelText}>❌ Hủy</Text>
+                <Text style={styles.modalButtonCancelText}>Hủy</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.modalButtonConfirm}
                 onPress={confirmExitGame}
+                hitSlop={mobileHitSlop}
+                pressRetentionOffset={mobileHitSlop}
               >
-                <Text style={styles.modalButtonConfirmText}>✅ Rời bàn</Text>
+                <Text style={styles.modalButtonConfirmText}>Rời bàn</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1101,11 +1736,155 @@ export default function BilliardGame() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: "#08172d",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    userSelect: "none" as any,
+    paddingTop: 10,
+    paddingBottom: 10,
+  },
+  hudTopBar: {
+    width: "100%",
+    maxWidth: 1280,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    marginBottom: 5,
+    position: "relative",
+    zIndex: 30,
+    elevation: 22,
+  },
+  hudActionButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
-    userSelect: "none" as any,
-    paddingVertical: 10,
+    backgroundColor: "#129a43",
+    borderWidth: 2,
+    borderColor: "#0d662d",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  hudActionIcon: {
+    color: "#fff",
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  hudCenter: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    marginHorizontal: 6,
+  },
+  hudPlayerPanel: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.56)",
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.45)",
+    paddingHorizontal: 5,
+    paddingVertical: 4,
+    minWidth: 115,
+    maxWidth: 170,
+  },
+  hudPlayerPanelActive: {
+    borderColor: "#22c55e",
+    shadowColor: "#22c55e",
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+  },
+  hudAvatar: {
+    width: 21,
+    height: 21,
+    borderRadius: 6,
+    marginRight: 5,
+  },
+  hudAvatarBlue: {
+    backgroundColor: "#1fa4ff",
+  },
+  hudAvatarPink: {
+    backgroundColor: "#ff3f7f",
+  },
+  hudPlayerContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  hudPlayerLabel: {
+    color: "#fff",
+    fontSize: 7,
+    fontWeight: "700",
+    marginBottom: 3,
+  },
+  hudProgressRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  hudProgressDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: "rgba(30,41,59,0.9)",
+    borderWidth: 0.5,
+    borderColor: "rgba(148,163,184,0.7)",
+  },
+  hudVsText: {
+    color: "#22c55e",
+    fontSize: 19,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  statusPill: {
+    width: "96%",
+    maxWidth: 1200,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.45)",
+    marginBottom: 4,
+    gap: 5,
+    position: "relative",
+    zIndex: 28,
+    elevation: 20,
+  },
+  statusPillText: {
+    flex: 1,
+    color: "#dbeafe",
+    fontSize: 7,
+    fontWeight: "600",
+  },
+  timerBadge: {
+    minWidth: 34,
+    borderRadius: 999,
+    paddingHorizontal: 5,
+    paddingVertical: 3,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.95)",
+    borderWidth: 1,
+    borderColor: "rgba(34,211,238,0.7)",
+  },
+  timerBadgeValue: {
+    color: "#22c55e",
+    fontSize: 8,
+    fontWeight: "900",
   },
   backButton: {
     position: "absolute",
@@ -1231,17 +2010,23 @@ const styles = StyleSheet.create({
   gameArea: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 15,
+    width: "100%",
+    zIndex: 10,
+    elevation: 8,
   },
   tableContainer: {
-    backgroundColor: "#8B4513",
+    backgroundColor: "#782615",
     padding: 10,
-    borderRadius: 10,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: "rgba(148, 163, 184, 0.65)",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.6,
+    shadowRadius: 14,
+    elevation: 12,
     userSelect: "none" as any,
   },
   powerSliderContainer: {
@@ -1336,34 +2121,55 @@ const styles = StyleSheet.create({
   controls: {
     marginTop: 10,
     alignItems: "center",
+    gap: 8,
+    width: "95%",
+    maxWidth: 1180,
+    position: "relative",
+    zIndex: 26,
+    elevation: 18,
+  },
+  pushOutDecisionRow: {
+    flexDirection: "row",
+    gap: 8,
   },
   button: {
-    backgroundColor: "#4CAF50",
+    backgroundColor: "#0ea5e9",
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 5,
   },
+  pushOutButton: {
+    backgroundColor: "#2563eb",
+  },
+  pushOutDecisionPrimary: {
+    backgroundColor: "#16a34a",
+  },
+  pushOutDecisionSecondary: {
+    backgroundColor: "#475569",
+  },
   buttonText: {
     color: "#fff",
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "bold",
   },
   infoBox: {
-    marginTop: 8,
+    marginTop: 6,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: "#2a2a2a",
-    borderRadius: 8,
+    backgroundColor: "rgba(3, 7, 18, 0.72)",
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#444",
+    borderColor: "rgba(56,189,248,0.35)",
   },
   infoText: {
-    color: "#888",
+    color: "#93c5fd",
     fontSize: 10,
     textAlign: "center",
     marginVertical: 1,
@@ -1443,3 +2249,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 });
+
+
+

@@ -6,36 +6,40 @@ export const GAME_CONFIG = {
   POINTS_PER_BALL: 10,
   CUE_BALL_PENALTY: -10,
   MESSAGE_DURATION: 2000,
-  /** Thời gian mỗi lượt (giây). Hết giờ không đánh thì chuyển lượt. */
+  // Per-turn timer (seconds)
   TURN_TIME_SECONDS: 15,
+  THREE_CUSHION_TURN_TIME_SECONDS: 45,
+  THREE_CUSHION_TARGET_POINTS: 30,
+  THREE_CUSHION_POWER_BOOST: 1.55,
+  THREE_CUSHION_MAX_POWER_MULTIPLIER: 2.8,
 
-  // Góc và khoảng cách
+  // Aiming and cue visuals
   AIM_LINE_LENGTH: 250,
   PREDICTION_DOTS: 3,
   PREDICTION_DOT_SPACING: 30,
   CUE_DISTANCE: 25,
   CUE_LENGTH: 100,
 
-  // Slider
+  // Power slider
   SLIDER_HEIGHT: 300,
 } as const;
 
 export const GAME_MESSAGES = {
-  CUE_BALL_POCKETED: "❌ Bi trắng vào lỗ! Đối thủ có ball in hand",
-  BALL_POCKETED: "🎯 Tuyệt vời! +10 điểm",
-  VICTORY: "🏆 CHIẾN THẮNG!",
-  CUE_BALL_IN_HOLE: "❌ Bi trắng đã vào lỗ - Bấm Chơi lại",
-  BALLS_MOVING: "⚪ Bi đang lăn...",
-  READY_TO_AIM: "🎯 Chạm bàn để ngắm → Kéo thả thanh lực để bắn!",
-  BREAK_SHOT: "🎱 Phá bi! Người chơi 1 bắt đầu",
-  WRONG_BALL: "❌ Đánh sai bi! Đổi lượt",
-  TURN_CHANGE: "🔄 Đổi lượt chơi",
-  MISS_BALL: "❌ Không chạm bi! Đối thủ có ball in hand",
-  WRONG_FIRST_BALL: "❌ Chạm sai bi trước! Đối thủ có ball in hand",
-  INVALID_BREAK: "❌ Khai cuộc sai! Cần 4 bi chạm băng hoặc bi vào lỗ",
-  BALL_8_EARLY: "💀 Đánh bi 8 quá sớm - THUA!",
-  BALL_8_WIN: "🏆 CHIẾN THẮNG! Bi 8 vào lỗ",
-  TABLE_OPEN: "⚪ Bàn đang mở - Chọn nhóm bi",
+  CUE_BALL_POCKETED: "Phạm lỗi: bi trắng vào lỗ. Đối thủ được đặt bi tự do.",
+  BALL_POCKETED: "Đánh đẹp! +10 điểm",
+  VICTORY: "Chiến thắng!",
+  CUE_BALL_IN_HOLE: "Bi trắng vào lỗ",
+  BALLS_MOVING: "Bi đang lăn...",
+  READY_TO_AIM: "Ngắm và thả thanh lực để bắn",
+  BREAK_SHOT: "Phá bi: Người chơi 1 đánh trước",
+  WRONG_BALL: "Chạm sai bi. Đổi lượt.",
+  TURN_CHANGE: "Đã đổi lượt",
+  MISS_BALL: "Không chạm bi. Đối thủ được đặt bi tự do.",
+  WRONG_FIRST_BALL: "Chạm bi đầu sai. Đối thủ được đặt bi tự do.",
+  INVALID_BREAK: "Lượt phá bi không hợp lệ.",
+  BALL_8_EARLY: "Vào bi số 8 quá sớm: thua.",
+  BALL_8_WIN: "Vào bi số 8: thắng.",
+  TABLE_OPEN: "Bàn mở - chọn nhóm bi.",
 } as const;
 
 export const PLAYER_COLORS = {
@@ -44,7 +48,7 @@ export const PLAYER_COLORS = {
 } as const;
 
 export const POWER_LEVELS = {
-  WEAK: { max: 5, label: "🟢 Nhẹ", color: "#4CAF50" },
-  MEDIUM: { max: 10, label: "🟡 Vừa", color: "#FFC107" },
-  STRONG: { max: 15, label: "🔴 Mạnh", color: "#F44336" },
+  WEAK: { max: 5, label: "Thấp", color: "#4CAF50" },
+  MEDIUM: { max: 10, label: "Vừa", color: "#FFC107" },
+  STRONG: { max: 15, label: "Cao", color: "#F44336" },
 } as const;
