@@ -28,7 +28,6 @@ import {
 } from "../../utils/physics";
 import { GAME_CONFIG, GAME_MESSAGES } from "../../constants/game";
 import { getCueVisualTheme } from "../../constants/cueVisuals";
-import { getCueNameVi } from "../../constants/cueLocale";
 import {
   useTwoPlayerGameLogic,
   type SerializedGameState,
@@ -819,24 +818,56 @@ export default function BilliardGame() {
       return Math.min(lowest, ball.id);
     }, null);
   const remainingObjectBalls = balls.filter((b) => b.id > 0 && !b.isPocketed).length;
+  const showAimGuides =
+    isMyTurn &&
+    !isMoving &&
+    !pushOutDecisionPending &&
+    !cueBall.isPocketed &&
+    (!ballInHand || ballInHandPlaced);
 
-  const { aimEndX, aimEndY } = calculateAimLine(cueBall, aimAngle);
-  const predictionDots = calculatePredictionDots(cueBall, aimAngle);
-  const { cueStartX, cueStartY, cueEndX, cueEndY } = calculateCuePosition(
-    cueBall,
-    aimAngle,
+  const { aimEndX, aimEndY } = useMemo(
+    () =>
+      showAimGuides
+        ? calculateAimLine(cueBall, aimAngle)
+        : { aimEndX: cueBall.x, aimEndY: cueBall.y },
+    [showAimGuides, cueBall, aimAngle],
   );
 
-  const targetPredictions = calculateTargetPredictions(
-    cueBall,
-    aimAngle,
-    balls,
-    isMoving,
+  const predictionDots = useMemo(
+    () => (showAimGuides ? calculatePredictionDots(cueBall, aimAngle) : []),
+    [showAimGuides, cueBall, aimAngle],
   );
-  const closestTarget = findClosestTarget(targetPredictions, cueBall);
-  const cueBallReflection = closestTarget
-    ? calculateCueBallReflection(closestTarget, cueBall)
-    : null;
+
+  const { cueStartX, cueStartY, cueEndX, cueEndY } = useMemo(
+    () =>
+      showAimGuides
+        ? calculateCuePosition(cueBall, aimAngle)
+        : {
+            cueStartX: cueBall.x,
+            cueStartY: cueBall.y,
+            cueEndX: cueBall.x,
+            cueEndY: cueBall.y,
+          },
+    [showAimGuides, cueBall, aimAngle],
+  );
+
+  const targetPredictions = useMemo(
+    () =>
+      showAimGuides
+        ? calculateTargetPredictions(cueBall, aimAngle, balls, isMoving)
+        : [],
+    [showAimGuides, cueBall, aimAngle, balls, isMoving],
+  );
+
+  const closestTarget = useMemo(
+    () => (targetPredictions.length ? findClosestTarget(targetPredictions, cueBall) : null),
+    [targetPredictions, cueBall],
+  );
+
+  const cueBallReflection = useMemo(
+    () => (closestTarget ? calculateCueBallReflection(closestTarget, cueBall) : null),
+    [closestTarget, cueBall],
+  );
 
   const powerLevel = getPowerLevel(power);
   const cueTheme = getCueVisualTheme(equippedCue);
@@ -923,11 +954,21 @@ export default function BilliardGame() {
   const player2ProgressValue = isEightBallMode
     ? Math.max(0, Math.min(7, 7 - player2Balls))
     : Math.max(0, Math.min(progressSlotCount, gameState.players[1].score));
+  const solidBallIds = [1, 2, 3, 4, 5, 6, 7];
+  const stripedBallIds = [9, 10, 11, 12, 13, 14, 15];
+  const progressIdleColor = "#0b0b0b";
+  const ballsById = useMemo(() => {
+    const map = new Map<number, Ball>();
+    balls.forEach((ball) => {
+      map.set(ball.id, ball);
+    });
+    return map;
+  }, [balls]);
 
-  const renderProgressDots = (filled: number, activeColor: string) =>
+  const renderScoreProgressDots = (filled: number, activeColor: string) =>
     Array.from({ length: progressSlotCount }).map((_, idx) => (
       <View
-        key={`progress-${idx}`}
+        key={`progress-score-${idx}`}
         style={[
           styles.hudProgressDot,
           idx < filled && {
@@ -937,6 +978,42 @@ export default function BilliardGame() {
         ]}
       />
     ));
+
+  const renderEightBallProgressDots = (playerIndex: 0 | 1) => {
+    const player = gameState.players[playerIndex];
+    if (player.ballType === "none") {
+      return Array.from({ length: 7 }).map((_, idx) => (
+        <View
+          key={`progress-player-${playerIndex + 1}-idle-${idx}`}
+          style={[
+            styles.hudProgressDot,
+            {
+              backgroundColor: progressIdleColor,
+              borderColor: "#1f2937",
+            },
+          ]}
+        />
+      ));
+    }
+
+    const trackedIds = player.ballType === "solid" ? solidBallIds : stripedBallIds;
+    return trackedIds.map((ballId) => {
+      const ball = ballsById.get(ballId);
+      const isPocketed = !!ball?.isPocketed;
+      return (
+        <View
+          key={`progress-player-${playerIndex + 1}-ball-${ballId}`}
+          style={[
+            styles.hudProgressDot,
+            {
+              backgroundColor: isPocketed ? progressIdleColor : (ball?.color ?? progressIdleColor),
+              borderColor: isPocketed ? "#1f2937" : "#e2e8f0",
+            },
+          ]}
+        />
+      );
+    });
+  };
 
   const canDeclarePushOut =
     isNineBallMode &&
@@ -1154,7 +1231,9 @@ export default function BilliardGame() {
                 {player1DisplayName}
               </Text>
               <View style={styles.hudProgressRow}>
-                {renderProgressDots(player1ProgressValue, "#16d9ff")}
+                {isEightBallMode
+                  ? renderEightBallProgressDots(0)
+                  : renderScoreProgressDots(player1ProgressValue, "#16d9ff")}
               </View>
             </View>
           </View>
@@ -1173,7 +1252,9 @@ export default function BilliardGame() {
                 {player2DisplayName}
               </Text>
               <View style={styles.hudProgressRow}>
-                {renderProgressDots(player2ProgressValue, "#ff4f93")}
+                {isEightBallMode
+                  ? renderEightBallProgressDots(1)
+                  : renderScoreProgressDots(player2ProgressValue, "#ff4f93")}
               </View>
             </View>
           </View>
@@ -1268,11 +1349,7 @@ export default function BilliardGame() {
                 </React.Fragment>
               ))}
 
-            {isMyTurn &&
-              !isMoving &&
-              !pushOutDecisionPending &&
-              !cueBall.isPocketed &&
-              (!ballInHand || (ballInHand && ballInHandPlaced)) && (
+            {showAimGuides && (
                 <>
                   <Line
                     x1={cueBall.x}
@@ -1478,11 +1555,7 @@ export default function BilliardGame() {
               );
             })}
 
-            {isMyTurn &&
-              !isMoving &&
-              !pushOutDecisionPending &&
-              !cueBall.isPocketed &&
-              (!ballInHand || (ballInHand && ballInHandPlaced)) && (
+            {showAimGuides && (
                 <>
                   <Circle
                     cx={cueBall.x}
@@ -1639,29 +1712,6 @@ export default function BilliardGame() {
             <Text style={styles.buttonText}>Chơi lại</Text>
           </TouchableOpacity>
         )}
-
-        <View style={styles.infoBox}>
-          <Text style={styles.infoText}>
-            Gậy: {getCueNameVi(equippedCue)} | Lực {equippedCue?.force ?? 35} | Kiểm soát {equippedCue?.control ?? 35}
-          </Text>
-          <Text style={styles.infoText}>
-            {gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} | Vàng = chưa đặt | Xanh = đã đặt
-          </Text>
-          <Text style={styles.infoText}>
-            {isThreeCushionMode
-              ? "3 băng: chạm 2 bi mục tiêu, đủ ít nhất 3 băng trước bi thứ hai"
-              : isNineBallMode
-              ? "9 bi: luôn chạm bi có số nhỏ nhất trước"
-              : "Bi màu (1-7) vs Bi khoang (9-15)"}
-          </Text>
-          <Text style={styles.infoText}>
-            {isThreeCushionMode
-              ? `Mốc thắng: ${GAME_CONFIG.THREE_CUSHION_TARGET_POINTS} điểm`
-              : isNineBallMode
-              ? "Push Out chỉ dùng sau phá hợp lệ | Bi trắng lỗi: đối thủ được đặt bi tự do"
-              : "Đánh bi 8 cuối cùng | Phạm lỗi bi trắng: đối thủ được đặt bi tự do"}
-          </Text>
-        </View>
       </View>
 
       {gameResult && (() => {
@@ -2159,21 +2209,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "bold",
   },
-  infoBox: {
-    marginTop: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "rgba(3, 7, 18, 0.72)",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(56,189,248,0.35)",
-  },
-  infoText: {
-    color: "#93c5fd",
-    fontSize: 10,
-    textAlign: "center",
-    marginVertical: 1,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.7)",
@@ -2249,6 +2284,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 });
+
 
 
 

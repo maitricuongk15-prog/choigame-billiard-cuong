@@ -28,8 +28,18 @@ import {
   sendRoomInvite,
   type InvitablePlayer,
 } from "../services/friendService";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { RoomWithPlayers } from "../types/room";
 import { getAvatarEmoji, normalizeAvatarUrl } from "../utils/avatar";
+
+type ChatMessage = {
+  id: string;
+  senderId: string;
+  playerName: string;
+  avatar: string;
+  message: string;
+  time: string;
+};
 
 export default function WaitingRoomScreen() {
   const { roomId, roomCode, roomConfig, setRoomId, setRoomCode, setRoomConfig, setRoomHostId, setPlayerNames } = useGameContext();
@@ -38,7 +48,7 @@ export default function WaitingRoomScreen() {
   const [room, setRoom] = useState<RoomWithPlayers | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<{ id: number; playerName: string; avatar: string; message: string; time: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [invitablePlayers, setInvitablePlayers] = useState<InvitablePlayer[]>([]);
@@ -47,6 +57,7 @@ export default function WaitingRoomScreen() {
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteInfo, setInviteInfo] = useState<string | null>(null);
   const chatScrollRef = useRef<ScrollView>(null);
+  const roomChannelRef = useRef<RealtimeChannel | null>(null);
 
   const currentUserId = user?.id ?? null;
   const isHost = room && currentUserId && String(room.host_id) === String(currentUserId);
@@ -64,6 +75,14 @@ export default function WaitingRoomScreen() {
     setRoomHostId(null);
     router.replace("/");
   }, [setRoomCode, setRoomConfig, setRoomHostId, setRoomId]);
+
+  const appendChatMessage = useCallback((nextMessage: ChatMessage) => {
+    setChatMessages((prev) => {
+      if (prev.some((m) => m.id === nextMessage.id)) return prev;
+      const next = [...prev, nextMessage];
+      return next.length > 120 ? next.slice(next.length - 120) : next;
+    });
+  }, []);
 
   const loadRoom = async (id: string) => {
     setLoading(true);
@@ -138,6 +157,17 @@ export default function WaitingRoomScreen() {
     if (!roomId) return;
     const channel = supabase
       .channel(`room:${roomId}`)
+      .on("broadcast", { event: "chat_message" }, ({ payload }) => {
+        const incoming = payload as Partial<ChatMessage> | null;
+        if (!incoming) return;
+        if (typeof incoming.id !== "string") return;
+        if (typeof incoming.senderId !== "string") return;
+        if (typeof incoming.playerName !== "string") return;
+        if (typeof incoming.avatar !== "string") return;
+        if (typeof incoming.message !== "string") return;
+        if (typeof incoming.time !== "string") return;
+        appendChatMessage(incoming as ChatMessage);
+      })
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_players", filter: `room_id=eq.${roomId}` },
@@ -160,13 +190,16 @@ export default function WaitingRoomScreen() {
             resetRoomAndGoLobby();
           }
         }
-      )
-      .subscribe();
+      );
+
+    roomChannelRef.current = channel;
+    channel.subscribe();
 
     return () => {
+      roomChannelRef.current = null;
       supabase.removeChannel(channel);
     };
-  }, [roomId, resetRoomAndGoLobby]);
+  }, [roomId, resetRoomAndGoLobby, appendChatMessage]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -212,24 +245,36 @@ export default function WaitingRoomScreen() {
     resetRoomAndGoLobby();
   };
 
-  const handleSendMessage = () => {
-    if (!chatInput.trim()) return;
+  const handleSendMessage = async () => {
+    const messageText = chatInput.trim();
+    if (!messageText) return;
     const name =
       room?.room_players?.find((p) => p.user_id === currentUserId)?.profiles
         ?.display_name ||
       user?.email?.split("@")[0] ||
-      "Bạn";
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: prev.length + 1,
-        playerName: name,
-        avatar: "😎",
-        message: chatInput,
-        time: new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }),
-      },
-    ]);
+      "Ban";
+
+    const outgoingMessage: ChatMessage = {
+      id: `${Date.now()}-${currentUserId ?? "guest"}-${Math.random().toString(36).slice(2, 8)}`,
+      senderId: currentUserId ?? "guest",
+      playerName: name,
+      avatar: getAvatarEmoji(`${currentUserId ?? "guest"}:${name}`),
+      message: messageText,
+      time: new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    appendChatMessage(outgoingMessage);
     setChatInput("");
+
+    if (!roomChannelRef.current) return;
+    const sendStatus = await roomChannelRef.current.send({
+      type: "broadcast",
+      event: "chat_message",
+      payload: outgoingMessage,
+    });
+    if (sendStatus !== "ok") {
+      console.warn("[ROOM CHAT] send failed:", sendStatus);
+    }
   };
 
   const loadInvitableList = async () => {
@@ -997,4 +1042,5 @@ const styles = StyleSheet.create({
   startButtonText: { fontSize: 16, fontWeight: "bold", color: "#000" },
   startButtonIcon: { fontSize: 20 },
 });
+
 

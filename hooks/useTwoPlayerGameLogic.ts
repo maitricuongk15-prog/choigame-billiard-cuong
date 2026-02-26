@@ -77,6 +77,7 @@ export const useTwoPlayerGameLogic = (options?: {
   onGameOver?: (result: GameResult) => void;
   gameMode?: GameMode;
 }) => {
+  const MOTION_EPSILON = 0.01;
   const mode = options?.gameMode ?? "8ball";
   const isNineBallMode = mode === "9ball";
   const isThreeCushionMode = mode === "3cushion";
@@ -224,6 +225,15 @@ export const useTwoPlayerGameLogic = (options?: {
   useEffect(() => {
     const updateGame = () => {
       setBalls((prev) => {
+        const hasActiveMotion = prev.some(
+          (b) =>
+            !b.isPocketed &&
+            (Math.abs(b.vx) > MOTION_EPSILON || Math.abs(b.vy) > MOTION_EPSILON),
+        );
+        if (!hasActiveMotion) {
+          return prev;
+        }
+
         const next = prev.map((b) => ({ ...b }));
         const substeps = getPhysicsSubsteps(next);
         const dt = 1 / substeps;
@@ -248,12 +258,8 @@ export const useTwoPlayerGameLogic = (options?: {
 
                   if (ball.id === 0) {
                     cueBallPocketed.current = true;
-                    console.log("[CUE BALL POCKETED]");
                   } else if (hasShot.current) {
                     ballsPocketedThisTurn.current.add(ball.id);
-                    console.log(
-                      `[BALL POCKETED] Id: ${ball.id}, Total: ${ballsPocketedThisTurn.current.size}`,
-                    );
                   }
                 }
               }
@@ -269,9 +275,6 @@ export const useTwoPlayerGameLogic = (options?: {
                       const hitBall = next[i].id === 0 ? next[j] : next[i];
                       if (!firstBallHit.current && hasShot.current) {
                         firstBallHit.current = hitBall;
-                        console.log(
-                          `[FIRST BALL HIT] Id: ${hitBall.id}, Type: ${hitBall.isStriped ? "striped" : "solid"}`,
-                        );
                       }
                       if (isThreeCushionMode && hasShot.current && hitBall.id !== 0) {
                         const alreadyHit = caromHitOrder.current.includes(hitBall.id);
@@ -309,6 +312,10 @@ export const useTwoPlayerGameLogic = (options?: {
         }
 
         next.forEach(applyFriction);
+        next.forEach((ball) => {
+          if (Math.abs(ball.vx) < MOTION_EPSILON) ball.vx = 0;
+          if (Math.abs(ball.vy) < MOTION_EPSILON) ball.vy = 0;
+        });
 
         return next;
       });
@@ -1090,18 +1097,21 @@ export const useTwoPlayerGameLogic = (options?: {
 
   const resetGame = () => {
     setBalls(getInitialBallsByMode(mode));
-    const randomFirstPlayer = (Math.random() < 0.5 ? 1 : 2) as 1 | 2;
+    const firstPlayer = (mode === "ai" ? 1 : Math.random() < 0.5 ? 1 : 2) as 1 | 2;
     setGameState({
-      currentPlayer: randomFirstPlayer,
+      currentPlayer: firstPlayer,
       players: initialPlayers,
       isBreak: true,
       turnEnded: false,
     });
     setMessage(
       isThreeCushionMode
-        ? `3 băng: ${initialPlayers[randomFirstPlayer - 1].name} đánh trước`
-        : `🎱 Phá bi! ${initialPlayers[randomFirstPlayer - 1].name} đánh trước`,
+        ? `3 băng: ${initialPlayers[firstPlayer - 1].name} đánh trước`
+        : `🎱 Phá bi! ${initialPlayers[firstPlayer - 1].name} đánh trước`,
     );
+    if (mode === "ai") {
+      setMessage("Bạn đánh trước");
+    }
     setBallInHand(false);
     setBallInHandPlaced(false);
     setPushOutAvailableFor(null);
