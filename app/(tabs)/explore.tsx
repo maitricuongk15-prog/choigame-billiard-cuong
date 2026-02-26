@@ -448,7 +448,7 @@ export default function BilliardGame() {
     wasMovingRef.current = true;
     const interval = setInterval(() => {
       sendGameStateRef.current();
-    }, 33);
+    }, 50);
     return () => clearInterval(interval);
   }, [isMoving, isHost, isMultiplayer]);
 

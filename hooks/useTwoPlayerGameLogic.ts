@@ -78,6 +78,9 @@ export const useTwoPlayerGameLogic = (options?: {
   gameMode?: GameMode;
 }) => {
   const MOTION_EPSILON = 0.01;
+  const REMOTE_BLEND_DISTANCE = BALL_RADIUS * 1.8;
+  const REMOTE_POSITION_BLEND = 0.45;
+  const REMOTE_VELOCITY_BLEND = 0.6;
   const mode = options?.gameMode ?? "8ball";
   const isNineBallMode = mode === "9ball";
   const isThreeCushionMode = mode === "3cushion";
@@ -905,16 +908,70 @@ export const useTwoPlayerGameLogic = (options?: {
   });
 
   const applyRemoteState = (state: SerializedGameState) => {
-    setBalls(state.balls.map((b) => ({ ...b })));
-    setGameState({
-      currentPlayer: state.gameState.currentPlayer,
-      players: [
-        { ...state.gameState.players[0] },
-        { ...state.gameState.players[1] },
-      ],
-      isBreak: state.gameState.isBreak,
-      turnEnded: state.gameState.turnEnded,
+    const remoteMoving = state.balls.some(
+      (b) =>
+        !b.isPocketed &&
+        (Math.abs(b.vx) > MOTION_EPSILON || Math.abs(b.vy) > MOTION_EPSILON),
+    );
+
+    setBalls((prev) => {
+      const prevById = new Map<number, Ball>();
+      prev.forEach((b) => prevById.set(b.id, b));
+
+      return state.balls.map((remoteBall) => {
+        const prevBall = prevById.get(remoteBall.id);
+        if (!prevBall) return { ...remoteBall };
+
+        const changedPocketState = prevBall.isPocketed !== remoteBall.isPocketed;
+        if (!remoteMoving || changedPocketState || remoteBall.isPocketed) {
+          return { ...remoteBall };
+        }
+
+        const dist = Math.hypot(remoteBall.x - prevBall.x, remoteBall.y - prevBall.y);
+        if (dist > REMOTE_BLEND_DISTANCE) {
+          return { ...remoteBall };
+        }
+
+        return {
+          ...remoteBall,
+          x: prevBall.x + (remoteBall.x - prevBall.x) * REMOTE_POSITION_BLEND,
+          y: prevBall.y + (remoteBall.y - prevBall.y) * REMOTE_POSITION_BLEND,
+          vx: prevBall.vx + (remoteBall.vx - prevBall.vx) * REMOTE_VELOCITY_BLEND,
+          vy: prevBall.vy + (remoteBall.vy - prevBall.vy) * REMOTE_VELOCITY_BLEND,
+        };
+      });
     });
+
+    setGameState((prev) => {
+      const next = state.gameState;
+      const samePlayers =
+        prev.players.length === next.players.length &&
+        prev.players.every((p, idx) => {
+          const n = next.players[idx];
+          return (
+            p.id === n.id &&
+            p.name === n.name &&
+            p.score === n.score &&
+            p.ballType === n.ballType &&
+            p.color === n.color
+          );
+        });
+
+      const unchanged =
+        prev.currentPlayer === next.currentPlayer &&
+        prev.isBreak === next.isBreak &&
+        prev.turnEnded === next.turnEnded &&
+        samePlayers;
+
+      if (unchanged) return prev;
+      return {
+        currentPlayer: next.currentPlayer,
+        players: [{ ...next.players[0] }, { ...next.players[1] }],
+        isBreak: next.isBreak,
+        turnEnded: next.turnEnded,
+      };
+    });
+
     setMessage(state.message);
     setBallInHand(state.ballInHand);
     setBallInHandPlaced(state.ballInHandPlaced);
