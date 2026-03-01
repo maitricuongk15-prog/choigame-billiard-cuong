@@ -85,3 +85,18 @@ This migration adds:
   - `leave_room_with_bet`
   - `settle_room_bet`
 - Rebalanced cue prices/stats + new premium cues
+
+## 9. Matchmaking start flow migration
+
+Run this migration after `003_betting_and_cue_rebalance.sql`:
+
+- `supabase/migrations/004_matchmaking_start_flow.sql`
+
+This migration adds:
+- RPC: `start_matchmaking_or_start`
+  - Nếu phòng đã đủ người: bấm bắt đầu sẽ vào trận ngay.
+  - Nếu phòng chỉ có chủ phòng: bấm bắt đầu sẽ chuyển sang trạng thái tìm đối thủ.
+  - Khi có 2 host cùng chế độ + cùng mức cược: tự ghép cặp và vào trận.
+- RPC: `cancel_matchmaking`
+  - Khi host đang tìm đối thủ, bấm lại nút sẽ hủy tìm trận và về trạng thái chờ.
+- Update `leave_room_with_bet` để hoàn tiền đúng khi rời phòng đang `searching`.

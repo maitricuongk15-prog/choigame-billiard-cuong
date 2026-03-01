@@ -123,6 +123,26 @@ export default function BilliardGame() {
     };
   }, [screenHeight, screenWidth]);
 
+  const settledBetKeyRef = useRef<string | null>(null);
+  const settleMatchResult = useCallback(
+    (winnerSlot: number, source: string) => {
+      if (!isMultiplayer || !roomId) return;
+      if (!Number.isFinite(winnerSlot) || winnerSlot < 1 || winnerSlot > 4) return;
+
+      const settleKey = `${roomId}:${winnerSlot}`;
+      if (settledBetKeyRef.current === settleKey) return;
+      settledBetKeyRef.current = settleKey;
+
+      void settleRoomBet(roomId, winnerSlot).then(({ error }) => {
+        if (error) {
+          settledBetKeyRef.current = null;
+          console.warn(`[BET] settle_room_bet (${source}) failed:`, error.message);
+        }
+      });
+    },
+    [isMultiplayer, roomId],
+  );
+
   const {
     balls,
     gameState,
@@ -150,17 +170,7 @@ export default function BilliardGame() {
   } = useTwoPlayerGameLogic({
     gameMode: roomConfig?.gameMode,
     onGameOver: (result) => {
-      if (isMultiplayer && isHost && roomId) {
-        const settleKey = `${roomId}:${result.winner.id}`;
-        if (settledBetKeyRef.current !== settleKey) {
-          settledBetKeyRef.current = settleKey;
-          void settleRoomBet(roomId, result.winner.id).then(({ error }) => {
-            if (error) {
-              console.warn("[BET] settle_room_bet failed:", error.message);
-            }
-          });
-        }
-      }
+      settleMatchResult(result.winner.id, "onGameOver");
 
       if (isMultiplayer && gameChannelRef.current) {
         gameChannelRef.current.send({
@@ -209,7 +219,6 @@ export default function BilliardGame() {
   const pendingRemoteStateRef = useRef<SerializedGameState | null>(null);
   const applyRemoteStateRafRef = useRef<number | null>(null);
   const sendGameStateRef = useRef<() => void>(() => {});
-  const settledBetKeyRef = useRef<string | null>(null);
   const aiTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const myPlayerNumber = isMultiplayer ? (isHost ? 1 : 2) : isAiMatch ? 1 : null;
@@ -392,17 +401,7 @@ export default function BilliardGame() {
         if (p1 != null || p2 != null) {
           setPlayerNames(p1 ?? player1Name, p2 ?? player2Name);
         }
-        if (isHost && roomId) {
-          const settleKey = `${roomId}:${result.winner.id}`;
-          if (settledBetKeyRef.current !== settleKey) {
-            settledBetKeyRef.current = settleKey;
-            void settleRoomBet(roomId, result.winner.id).then(({ error }) => {
-              if (error) {
-                console.warn("[BET] settle_room_bet from remote game_over failed:", error.message);
-              }
-            });
-          }
-        }
+        settleMatchResult(result.winner.id, "remote_game_over");
         applyRemoteGameResult(result);
       })
       .subscribe((status) => {
@@ -439,7 +438,7 @@ export default function BilliardGame() {
       supabase.removeChannel(channel);
       gameChannelRef.current = null;
     };
-  }, [roomId, isMultiplayer, isHost, myPlayerNumber]);
+  }, [roomId, isMultiplayer, isHost, myPlayerNumber, settleMatchResult]);
 
   const isMoving = isGameMoving(balls);
 
@@ -1111,12 +1110,18 @@ export default function BilliardGame() {
 
   // Handlers cho Game Result Screen
   const handleBackToLobby = () => {
+    if (gameResult?.winner?.id) {
+      settleMatchResult(gameResult.winner.id, "back_to_lobby");
+    }
     setShowGameResult(false);
     resetGame();
     router.push("/");
   };
 
   const handleExitGame = () => {
+    if (gameResult?.winner?.id) {
+      settleMatchResult(gameResult.winner.id, "exit_game");
+    }
     setShowGameResult(false);
     resetGame();
     router.push("/");

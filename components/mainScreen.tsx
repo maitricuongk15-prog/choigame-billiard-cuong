@@ -13,6 +13,7 @@ import {
 import type { User } from "@supabase/supabase-js";
 import { router } from "expo-router";
 import { getAvatarEmoji, normalizeAvatarUrl } from "../utils/avatar";
+import type { DailyMission } from "../types/mission";
 
 export interface Room {
   id: string;
@@ -39,6 +40,11 @@ interface MainScreenProps {
   onOpenRanking?: () => void;
   onOpenFriends?: () => void;
   onSignOut?: () => void;
+  missions?: DailyMission[];
+  missionLoading?: boolean;
+  claimingMissionKey?: string | null;
+  missionNotice?: { type: "success" | "error"; message: string } | null;
+  onClaimMission?: (missionKey: string) => void;
 }
 
 export default function MainScreen({
@@ -55,8 +61,14 @@ export default function MainScreen({
   onOpenRanking,
   onOpenFriends,
   onSignOut,
+  missions = [],
+  missionLoading = false,
+  claimingMissionKey = null,
+  missionNotice = null,
+  onClaimMission,
 }: MainScreenProps) {
   const [roomCodeInput, setRoomCodeInput] = useState("");
+  const [missionPanelVisible, setMissionPanelVisible] = useState(false);
   const userAvatarUrl = normalizeAvatarUrl(user?.user_metadata?.avatar_url);
   const userAvatarEmojiMeta =
     typeof user?.user_metadata?.avatar_emoji === "string"
@@ -136,6 +148,12 @@ export default function MainScreen({
     onOpenFriends?.();
   };
 
+  const getMissionProgressText = (mission: DailyMission) => {
+    if (mission.isClaimedToday) return "Đã nhận hôm nay";
+    if (mission.canClaim) return "Có thể nhận";
+    return `${Math.min(mission.progressCount, mission.targetCount)}/${mission.targetCount}`;
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -169,11 +187,20 @@ export default function MainScreen({
 
         <View style={styles.headerButtons}>
           {user && !authLoading && (
-            <View style={styles.coinBadge}>
-              <Text style={styles.coinBadgeText}>
-                XU {typeof coinsBalance === "number" ? coinsBalance.toLocaleString("vi-VN") : "..."}
-              </Text>
-            </View>
+            <>
+              <View style={styles.coinBadge}>
+                <Text style={styles.coinBadgeText}>
+                  XU {typeof coinsBalance === "number" ? coinsBalance.toLocaleString("vi-VN") : "..."}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.missionToggleButton}
+                onPress={() => setMissionPanelVisible((prev) => !prev)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.missionToggleIcon}>📄</Text>
+              </TouchableOpacity>
+            </>
           )}
           {!user && !authLoading ? (
             <TouchableOpacity
@@ -193,6 +220,85 @@ export default function MainScreen({
           )}
         </View>
       </View>
+
+      {missionPanelVisible && user && (
+        <View style={styles.missionPopoverWrap}>
+          <View style={styles.missionPopover}>
+            <View style={styles.missionPopoverHeader}>
+              <Text style={styles.missionTitle}>Nhiệm vụ hằng ngày</Text>
+              <TouchableOpacity onPress={() => setMissionPanelVisible(false)}>
+                <Text style={styles.missionCloseText}>Đóng</Text>
+              </TouchableOpacity>
+            </View>
+
+            {missionLoading ? (
+              <View style={styles.missionLoadingBox}>
+                <ActivityIndicator size="small" color="#11d452" />
+              </View>
+            ) : null}
+
+            {missionNotice ? (
+              <View
+                style={[
+                  styles.missionNotice,
+                  missionNotice.type === "error" ? styles.missionNoticeError : styles.missionNoticeSuccess,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.missionNoticeText,
+                    missionNotice.type === "error"
+                      ? styles.missionNoticeErrorText
+                      : styles.missionNoticeSuccessText,
+                  ]}
+                >
+                  {missionNotice.message}
+                </Text>
+              </View>
+            ) : null}
+
+            {!missionLoading && missions.length === 0 ? (
+              <Text style={styles.missionEmptyText}>Chưa có nhiệm vụ khả dụng.</Text>
+            ) : null}
+
+            <ScrollView style={styles.missionList} showsVerticalScrollIndicator={false}>
+              {missions.map((mission) => {
+                const disabled =
+                  mission.isClaimedToday || !mission.canClaim || claimingMissionKey === mission.missionKey;
+                return (
+                  <View key={mission.missionKey} style={styles.missionCard}>
+                    <View style={styles.missionInfo}>
+                      <Text style={styles.missionName}>{mission.name}</Text>
+                      <Text style={styles.missionDescription}>{mission.description}</Text>
+                      <Text style={styles.missionMeta}>
+                        Thưởng: +{mission.rewardCoins.toLocaleString("vi-VN")} xu | Tiến độ: {getMissionProgressText(mission)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.missionClaimButton, disabled && styles.missionClaimButtonDisabled]}
+                      onPress={() => onClaimMission?.(mission.missionKey)}
+                      disabled={disabled}
+                    >
+                      {claimingMissionKey === mission.missionKey ? (
+                        <ActivityIndicator size="small" color="#102216" />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.missionClaimButtonText,
+                            disabled && styles.missionClaimButtonTextDisabled,
+                          ]}
+                        >
+                          {mission.isClaimedToday ? "Đã nhận" : mission.canClaim ? "Nhận" : "Chưa đủ"}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      )}
 
       {/* Scrollable Content */}
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
@@ -470,6 +576,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "bold",
   },
+  missionToggleButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#2a4535",
+    backgroundColor: "#0f172a",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  missionToggleIcon: {
+    fontSize: 17,
+  },
   loginButton: {
     backgroundColor: "#11d452",
     paddingHorizontal: 14,
@@ -499,6 +618,39 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  missionPopoverWrap: {
+    position: "absolute",
+    top: 76,
+    right: 16,
+    width: 320,
+    zIndex: 50,
+  },
+  missionPopover: {
+    backgroundColor: "#11281b",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(17, 212, 82, 0.25)",
+    padding: 12,
+    maxHeight: 280,
+  },
+  missionPopoverHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  missionCloseText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  missionLoadingBox: {
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+  missionList: {
+    maxHeight: 215,
   },
   heroBanner: {
     marginHorizontal: 16,
@@ -599,6 +751,87 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "bold",
     color: "#0f172a",
+  },
+  missionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#e2e8f0",
+  },
+  missionNotice: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  missionNoticeSuccess: {
+    backgroundColor: "rgba(17, 212, 82, 0.12)",
+    borderColor: "rgba(17, 212, 82, 0.35)",
+  },
+  missionNoticeError: {
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    borderColor: "rgba(239, 68, 68, 0.45)",
+  },
+  missionNoticeText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  missionNoticeSuccessText: {
+    color: "#86efac",
+  },
+  missionNoticeErrorText: {
+    color: "#fca5a5",
+  },
+  missionEmptyText: {
+    color: "#94a3b8",
+    fontSize: 13,
+  },
+  missionCard: {
+    backgroundColor: "#0f172a",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    padding: 8,
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  missionInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  missionName: {
+    color: "#f8fafc",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  missionDescription: {
+    color: "#cbd5e1",
+    fontSize: 12,
+  },
+  missionMeta: {
+    color: "#facc15",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  missionClaimButton: {
+    backgroundColor: "#11d452",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 82,
+    alignItems: "center",
+  },
+  missionClaimButtonDisabled: {
+    backgroundColor: "#334155",
+  },
+  missionClaimButtonText: {
+    color: "#102216",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  missionClaimButtonTextDisabled: {
+    color: "#cbd5e1",
   },
   joinByCodeSection: {
     marginHorizontal: 16,

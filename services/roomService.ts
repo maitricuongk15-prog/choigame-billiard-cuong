@@ -195,6 +195,60 @@ export async function leaveRoom(roomId: string): Promise<{ error: Error | null }
   return { error: error as Error | null };
 }
 
+type StartFlowMode = "started" | "searching" | "matched";
+
+type StartFlowRpcRow = {
+  mode?: StartFlowMode;
+  room_id?: string;
+  host_id?: string | null;
+};
+
+export async function startMatchOrFindOpponent(roomId: string): Promise<{
+  mode: StartFlowMode | null;
+  roomId: string;
+  hostId: string | null;
+  error: Error | null;
+}> {
+  const { data, error } = await supabase.rpc("start_matchmaking_or_start", {
+    p_room_id: roomId,
+  });
+
+  if (error) {
+    return {
+      mode: null,
+      roomId: "",
+      hostId: null,
+      error: error as Error,
+    };
+  }
+
+  const row = (Array.isArray(data) ? data[0] : data) as StartFlowRpcRow | null;
+  const mode = row?.mode;
+  if (!mode || !["started", "searching", "matched"].includes(mode)) {
+    return {
+      mode: null,
+      roomId: "",
+      hostId: null,
+      error: new Error("Không nhận được trạng thái matchmaking hợp lệ."),
+    };
+  }
+
+  return {
+    mode,
+    roomId: row?.room_id || roomId,
+    hostId: row?.host_id || null,
+    error: null,
+  };
+}
+
+export async function cancelMatchmaking(roomId: string): Promise<{ error: Error | null }> {
+  const { error } = await supabase.rpc("cancel_matchmaking", {
+    p_room_id: roomId,
+  });
+
+  return { error: error as Error | null };
+}
+
 export async function startMatch(roomId: string): Promise<{ error: Error | null }> {
   const {
     data: { user },

@@ -14,8 +14,10 @@ import { useGameContext } from "../../context/gameContext";
 import { useAuth } from "../../context/AuthContext";
 import { listRooms, joinRoomById, joinRoomByCode } from "../../services/roomService";
 import { getMyCoins } from "../../services/shopService";
+import { claimDailyMission, listDailyMissions } from "../../services/missionService";
 import type { Room } from "../../components/mainScreen";
 import type { RoomRow } from "../../types/room";
+import type { DailyMission } from "../../types/mission";
 
 export default function ExploreScreen() {
   const { setRoomId, setRoomCode, setRoomConfig, setPlayerNames } = useGameContext();
@@ -26,6 +28,13 @@ export default function ExploreScreen() {
   const [coinsBalance, setCoinsBalance] = useState<number | null>(null);
   const [joinPopupVisible, setJoinPopupVisible] = useState(false);
   const [joinPopupMessage, setJoinPopupMessage] = useState("");
+  const [missions, setMissions] = useState<DailyMission[]>([]);
+  const [missionsLoading, setMissionsLoading] = useState(false);
+  const [claimingMissionKey, setClaimingMissionKey] = useState<string | null>(null);
+  const [missionNotice, setMissionNotice] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
 
   const showJoinPopup = (message: string) => {
     setJoinPopupMessage(message);
@@ -45,6 +54,24 @@ export default function ExploreScreen() {
     setCoinsBalance(coins);
   }, [user]);
 
+  const loadMissions = useCallback(async () => {
+    if (!user) {
+      setMissions([]);
+      setMissionsLoading(false);
+      return;
+    }
+
+    setMissionsLoading(true);
+    const { missions: rows, error } = await listDailyMissions();
+    if (error) {
+      setMissions([]);
+      setMissionsLoading(false);
+      return;
+    }
+    setMissions(rows);
+    setMissionsLoading(false);
+  }, [user]);
+
   useEffect(() => {
     setRoomId(null);
     setRoomCode(null);
@@ -57,10 +84,13 @@ export default function ExploreScreen() {
       setRooms([]);
       setRoomsLoading(false);
       setCoinsBalance(null);
+      setMissions([]);
+      setMissionsLoading(false);
       return;
     }
 
     loadCoins();
+    loadMissions();
 
     setRoomsLoading(true);
     listRooms().then(async ({ rooms: list, error }) => {
@@ -103,12 +133,13 @@ export default function ExploreScreen() {
       );
       setRoomsLoading(false);
     });
-  }, [user, loadCoins]);
+  }, [user, loadCoins, loadMissions]);
 
   useFocusEffect(
     useCallback(() => {
       void loadCoins();
-    }, [loadCoins])
+      void loadMissions();
+    }, [loadCoins, loadMissions])
   );
 
   const requireAuth = (action: () => void) => {
@@ -186,6 +217,29 @@ export default function ExploreScreen() {
     await signOut();
   };
 
+  const handleClaimMission = async (missionKey: string) => {
+    if (!user) {
+      router.push({ pathname: "/login", params: { redirect: "/" } });
+      return;
+    }
+
+    setMissionNotice(null);
+    setClaimingMissionKey(missionKey);
+    const { rewardCoins, error } = await claimDailyMission(missionKey);
+    setClaimingMissionKey(null);
+
+    if (error) {
+      setMissionNotice({ type: "error", message: error.message });
+      return;
+    }
+
+    setMissionNotice({
+      type: "success",
+      message: `Nhận thưởng thành công: +${rewardCoins.toLocaleString("vi-VN")} xu`,
+    });
+    await Promise.all([loadCoins(), loadMissions()]);
+  };
+
   return (
     <>
       <MainScreen
@@ -202,6 +256,11 @@ export default function ExploreScreen() {
         onOpenRanking={handleOpenRanking}
         onOpenFriends={handleOpenFriends}
         onSignOut={handleSignOut}
+        missions={missions}
+        missionLoading={missionsLoading}
+        claimingMissionKey={claimingMissionKey}
+        missionNotice={missionNotice}
+        onClaimMission={handleClaimMission}
       />
 
       <Modal

@@ -21,7 +21,8 @@ import {
   getRoomById,
   setReady,
   leaveRoom,
-  startMatch,
+  cancelMatchmaking,
+  startMatchOrFindOpponent,
 } from "../services/roomService";
 import {
   listInvitablePlayers,
@@ -56,15 +57,13 @@ export default function WaitingRoomScreen() {
   const [inviteSubmittingUserId, setInviteSubmittingUserId] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteInfo, setInviteInfo] = useState<string | null>(null);
+  const [isMatchmaking, setIsMatchmaking] = useState(false);
   const chatScrollRef = useRef<ScrollView>(null);
   const roomChannelRef = useRef<RealtimeChannel | null>(null);
 
   const currentUserId = user?.id ?? null;
   const isHost = room && currentUserId && String(room.host_id) === String(currentUserId);
   const myPlayer = room?.room_players?.find((p) => String(p.user_id) === String(currentUserId));
-  const allPlayersReady = room?.room_players?.length
-    ? room.room_players.every((p) => p.is_ready)
-    : false;
   const playerCount = room?.room_players?.length ?? 0;
   const maxPlayers = room?.player_count ?? roomConfig?.playerCount ?? 2;
 
@@ -117,6 +116,11 @@ export default function WaitingRoomScreen() {
     }
 
     setRoom(r ?? null);
+    setIsMatchmaking(
+      r.status === "searching" &&
+        String(r.host_id) === String(currentUserId) &&
+        (r.room_players?.length ?? 0) < 2
+    );
     if (r?.host_id) setRoomHostId(r.host_id);
     if (r) {
       const normalizedGameMode = (
@@ -210,6 +214,30 @@ export default function WaitingRoomScreen() {
   }, [roomId, currentUserId]);
 
   useEffect(() => {
+    if (!roomId || !isHost || !isMatchmaking || playerCount >= 2) return;
+
+    const intervalId = setInterval(() => {
+      void startMatchOrFindOpponent(roomId).then(
+        ({ mode, roomId: nextRoomId, hostId, error: err }) => {
+          if (err || !mode) return;
+          if (mode === "searching") return;
+
+          setIsMatchmaking(false);
+          if (nextRoomId && nextRoomId !== roomId) {
+            setRoomId(nextRoomId);
+          }
+          if (hostId) {
+            setRoomHostId(hostId);
+          }
+          router.replace("/explore");
+        }
+      );
+    }, 2500);
+
+    return () => clearInterval(intervalId);
+  }, [roomId, isHost, isMatchmaking, playerCount, setRoomHostId, setRoomId]);
+
+  useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollToEnd({ animated: true });
     }
@@ -224,14 +252,42 @@ export default function WaitingRoomScreen() {
 
   const handleStartMatch = async () => {
     if (!roomId || !isHost) return;
-    if (!allPlayersReady || playerCount < 2) {
-      Alert.alert("Chưa sẵn sàng", "Cần ít nhất 2 người và tất cả đều đã sẵn sàng.");
+
+    if (isMatchmaking && playerCount < 2) {
+      const { error: cancelError } = await cancelMatchmaking(roomId);
+      if (cancelError) {
+        Alert.alert("Lỗi", cancelError.message);
+        return;
+      }
+      setIsMatchmaking(false);
+      setRoom((prev) => (prev ? { ...prev, status: "waiting" } : prev));
       return;
     }
-    const { error: err } = await startMatch(roomId);
+
+    const { mode, roomId: nextRoomId, hostId, error: err } =
+      await startMatchOrFindOpponent(roomId);
     if (err) {
       Alert.alert("Lỗi", err.message);
       return;
+    }
+
+    if (!mode) {
+      Alert.alert("Lỗi", "Không nhận được trạng thái bắt đầu trận.");
+      return;
+    }
+
+    if (mode === "searching") {
+      setIsMatchmaking(true);
+      Alert.alert("Đang tìm đối thủ", "Hệ thống đang tìm người chơi cùng chế độ và mức cược.");
+      return;
+    }
+
+    setIsMatchmaking(false);
+    if (nextRoomId && nextRoomId !== roomId) {
+      setRoomId(nextRoomId);
+    }
+    if (hostId) {
+      setRoomHostId(hostId);
     }
     router.replace("/explore");
   };
@@ -241,6 +297,7 @@ export default function WaitingRoomScreen() {
       router.back();
       return;
     }
+    setIsMatchmaking(false);
     await leaveRoom(roomId);
     resetRoomAndGoLobby();
   };
@@ -373,7 +430,11 @@ export default function WaitingRoomScreen() {
           <Text style={styles.headerTitle}>Phòng #{displayRoomCode}</Text>
           <View style={styles.statusBadge}>
             <View style={styles.statusDot} />
-            <Text style={styles.statusText}>Đang chờ ({playerCount}/{maxPlayers})</Text>
+            <Text style={styles.statusText}>
+              {(room.status === "searching" || isMatchmaking)
+                ? `Đang tìm đối thủ (${playerCount}/${maxPlayers})`
+                : `Đang chờ (${playerCount}/${maxPlayers})`}
+            </Text>
           </View>
         </View>
 
@@ -644,16 +705,28 @@ export default function WaitingRoomScreen() {
 
           {isHost ? (
             <TouchableOpacity
-              style={[styles.startButton, (!allPlayersReady || playerCount < 2) && styles.startButtonDisabled]}
+              style={[
+                styles.startButton,
+                isMatchmaking && playerCount < 2 && styles.startButtonCancel,
+              ]}
               onPress={handleStartMatch}
-              disabled={!allPlayersReady || playerCount < 2}
             >
-              <Text style={styles.startButtonText}>BẮT ĐẦU TRẬN</Text>
-              <Text style={styles.startButtonIcon}>▶️</Text>
+              <Text style={[styles.startButtonText, isMatchmaking && playerCount < 2 && styles.startButtonTextLight]}>
+                {playerCount >= 2
+                  ? "BẮT ĐẦU TRẬN"
+                  : isMatchmaking
+                    ? "HỦY TÌM ĐỐI THỦ"
+                    : "TÌM ĐỐI THỦ"}
+              </Text>
+              <Text style={styles.startButtonIcon}>
+                {isMatchmaking && playerCount < 2 ? "✖" : "▶️"}
+              </Text>
             </TouchableOpacity>
           ) : (
             <View style={[styles.startButton, styles.startButtonDisabled]}>
-              <Text style={styles.startButtonText}>Chờ chủ phòng bắt đầu</Text>
+              <Text style={[styles.startButtonText, styles.startButtonTextDisabled]}>
+                Chờ chủ phòng bắt đầu
+              </Text>
             </View>
           )}
         </View>
@@ -1038,8 +1111,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
+  startButtonCancel: { backgroundColor: "#ef4444" },
   startButtonDisabled: { backgroundColor: "#334155" },
   startButtonText: { fontSize: 16, fontWeight: "bold", color: "#000" },
+  startButtonTextLight: { color: "#fff" },
+  startButtonTextDisabled: { color: "#cbd5e1" },
   startButtonIcon: { fontSize: 20 },
 });
 
