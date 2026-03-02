@@ -48,3 +48,21 @@ Join our community of developers creating universal apps.
 
 - [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
 - [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+## APK Download Website
+
+Project now has a public download page for APK versions:
+
+- Route: `/download`
+- Source page: `app/download.tsx`
+- Release data file: `data/apkReleases.ts`
+
+To add a new APK version, append one item into `data/apkReleases.ts` with:
+
+- `version`
+- `buildNumber`
+- `releaseDate`
+- `apkUrl`
+- `sizeMb`
+- `minAndroid`
+- `notes`

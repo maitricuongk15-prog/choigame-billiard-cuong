@@ -1,4 +1,4 @@
-export type RoomStatus = "waiting" | "playing" | "finished";
+export type RoomStatus = "waiting" | "searching" | "playing" | "finished";
 
 export interface RoomRow {
   id: string;
