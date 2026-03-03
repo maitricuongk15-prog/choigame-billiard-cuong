@@ -64,9 +64,6 @@ export const checkPocket = (ball: Ball): Pocket | null => {
         const dotProduct = -ball.vx * normX - ball.vy * normY;
 
         if (dotProduct > 0) {
-          console.log(
-            `[POCKET CHECK] Ball ${ball.id} entering pocket at (${pocket.x}, ${pocket.y})`,
-          );
           return pocket;
         }
       }

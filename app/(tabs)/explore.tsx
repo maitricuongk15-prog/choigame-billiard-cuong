@@ -6,6 +6,7 @@ import {
   Text,
   TouchableOpacity,
   Modal,
+  Platform,
   useWindowDimensions,
 } from "react-native";
 import { router } from "expo-router";
@@ -193,6 +194,8 @@ export default function BilliardGame() {
   const [equippedCue, setEquippedCue] = useState<CueRow | null>(null);
   const [turnTimeoutBlockShooting, setTurnTimeoutBlockShooting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const CUE_BALL_DRAG_INTERVAL_MS = 16;
+  const CUE_BALL_DRAG_MIN_DELTA = 0.75;
   const mobileHitSlop = useMemo(
     () => ({ top: 14, bottom: 14, left: 14, right: 14 }),
     [],
@@ -220,6 +223,8 @@ export default function BilliardGame() {
   const applyRemoteStateRafRef = useRef<number | null>(null);
   const sendGameStateRef = useRef<() => void>(() => {});
   const aiTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCueBallDragAtRef = useRef(0);
+  const lastCueBallDragPosRef = useRef<{ x: number; y: number } | null>(null);
 
   const myPlayerNumber = isMultiplayer ? (isHost ? 1 : 2) : isAiMatch ? 1 : null;
   const isMyTurn = !isMultiplayer
@@ -850,12 +855,17 @@ export default function BilliardGame() {
     [showAimGuides, cueBall, aimAngle],
   );
 
+  const shouldComputeAdvancedPrediction =
+    showAimGuides &&
+    !isDraggingCueBall &&
+    (Platform.OS === "web" || (isAiming && !isDraggingPower));
+
   const targetPredictions = useMemo(
     () =>
-      showAimGuides
+      shouldComputeAdvancedPrediction
         ? calculateTargetPredictions(cueBall, aimAngle, balls, isMoving)
         : [],
-    [showAimGuides, cueBall, aimAngle, balls, isMoving],
+    [shouldComputeAdvancedPrediction, cueBall, aimAngle, balls, isMoving],
   );
 
   const closestTarget = useMemo(
@@ -1030,59 +1040,68 @@ export default function BilliardGame() {
     !showGameResult &&
     pushOutDecisionPending.decider === gameState.currentPlayer;
 
-  const normalizeTableEvent = useCallback(
-    (event: any) => {
+  const getScaledTouchCoordinates = useCallback(
+    (event: any): { touchX: number; touchY: number } | null => {
       const nativeEvent = event?.nativeEvent;
-      if (!nativeEvent) return event;
+      if (!nativeEvent) return null;
 
-      const normalize = (value: unknown, factor: number) =>
-        typeof value === "number" ? value * factor : value;
+      const rawX =
+        typeof nativeEvent.locationX === "number"
+          ? nativeEvent.locationX
+          : nativeEvent.touches?.[0]?.locationX;
+      const rawY =
+        typeof nativeEvent.locationY === "number"
+          ? nativeEvent.locationY
+          : nativeEvent.touches?.[0]?.locationY;
 
-      const normalizedTouches = Array.isArray(nativeEvent.touches)
-        ? nativeEvent.touches.map((touch: Record<string, unknown>) => ({
-            ...touch,
-            locationX: normalize(touch.locationX, tableLayout.tableScaleX),
-            locationY: normalize(touch.locationY, tableLayout.tableScaleY),
-          }))
-        : nativeEvent.touches;
+      if (typeof rawX !== "number" || typeof rawY !== "number") return null;
 
       return {
-        ...event,
-        nativeEvent: {
-          ...nativeEvent,
-          locationX: normalize(nativeEvent.locationX, tableLayout.tableScaleX),
-          locationY: normalize(nativeEvent.locationY, tableLayout.tableScaleY),
-          touches: normalizedTouches,
-        },
+        touchX: rawX * tableLayout.tableScaleX,
+        touchY: rawY * tableLayout.tableScaleY,
       };
     },
     [tableLayout.tableScaleX, tableLayout.tableScaleY],
   );
 
+  const toScaledTableEvent = useCallback(
+    (event: any) => {
+      const scaled = getScaledTouchCoordinates(event);
+      if (!scaled) return event;
+      return {
+        nativeEvent: {
+          locationX: scaled.touchX,
+          locationY: scaled.touchY,
+        },
+      };
+    },
+    [getScaledTouchCoordinates],
+  );
+
   const getTableTouchCoordinates = useCallback(
-    (event: any) => getTouchCoordinates(normalizeTableEvent(event)),
-    [normalizeTableEvent],
+    (event: any) => getScaledTouchCoordinates(event) ?? getTouchCoordinates(event),
+    [getScaledTouchCoordinates],
   );
 
   const handleTableTouchStartScaled = useCallback(
     (event: any) => {
-      handleTableTouchStart(normalizeTableEvent(event));
+      handleTableTouchStart(toScaledTableEvent(event));
     },
-    [handleTableTouchStart, normalizeTableEvent],
+    [handleTableTouchStart, toScaledTableEvent],
   );
 
   const handleTableTouchMoveScaled = useCallback(
     (event: any) => {
-      handleTableTouchMove(normalizeTableEvent(event));
+      handleTableTouchMove(toScaledTableEvent(event));
     },
-    [handleTableTouchMove, normalizeTableEvent],
+    [handleTableTouchMove, toScaledTableEvent],
   );
 
   const isTouchOnCueBall = (touchX: number, touchY: number): boolean => {
     const dx = touchX - cueBall.x;
     const dy = touchY - cueBall.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    return distance <= BALL_RADIUS + 15;
+    const radius = BALL_RADIUS + 15;
+    return dx * dx + dy * dy <= radius * radius;
   };
 
   const handleBackToLobbyButton = () => {
@@ -1138,6 +1157,8 @@ export default function BilliardGame() {
 
     if (onCueBall) {
       setIsDraggingCueBall(true);
+      lastCueBallDragAtRef.current = 0;
+      lastCueBallDragPosRef.current = { x: cueBall.x, y: cueBall.y };
     } else {
       setIsAimingInBallInHand(true);
       handleTableTouchStartScaled(event);
@@ -1151,6 +1172,10 @@ export default function BilliardGame() {
     if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
 
     if (isDraggingCueBall) {
+      const now = Date.now();
+      if (now - lastCueBallDragAtRef.current < CUE_BALL_DRAG_INTERVAL_MS) return;
+      lastCueBallDragAtRef.current = now;
+
       const { touchX, touchY } = getTableTouchCoordinates(event);
 
       const minX = BALL_RADIUS + 10;
@@ -1160,18 +1185,26 @@ export default function BilliardGame() {
 
       const clampedX = Math.max(minX, Math.min(maxX, touchX));
       const clampedY = Math.max(minY, Math.min(maxY, touchY));
+      const lastPos = lastCueBallDragPosRef.current;
+      if (
+        lastPos &&
+        Math.abs(clampedX - lastPos.x) < CUE_BALL_DRAG_MIN_DELTA &&
+        Math.abs(clampedY - lastPos.y) < CUE_BALL_DRAG_MIN_DELTA
+      ) {
+        return;
+      }
+      const minDistanceSq = BALL_RADIUS * 2 * (BALL_RADIUS * 2);
 
       const wouldCollide = balls.some((ball) => {
         if (ball.id === 0 || ball.isPocketed) return false;
 
         const dx = clampedX - ball.x;
         const dy = clampedY - ball.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        return distance < BALL_RADIUS * 2;
+        return dx * dx + dy * dy < minDistanceSq;
       });
 
       if (!wouldCollide) {
+        lastCueBallDragPosRef.current = { x: clampedX, y: clampedY };
         moveCueBall(clampedX, clampedY);
         broadcastCueBallMove(clampedX, clampedY);
       }
@@ -1180,15 +1213,41 @@ export default function BilliardGame() {
     }
   };
 
-  const handleCueBallTouchEnd = () => {
+  const handleCueBallTouchEnd = (event?: any) => {
     if (!isMyTurn) return;
     if (pushOutDecisionPending) return;
     if (turnTimeoutBlockRef.current || turnTimeoutBlockShooting) return;
     const wasDraggingCueBall = isDraggingCueBall;
     setIsDraggingCueBall(false);
-    if (wasDraggingCueBall) {
+    lastCueBallDragAtRef.current = 0;
+
+    if (wasDraggingCueBall && event) {
+      const { touchX, touchY } = getTableTouchCoordinates(event);
+      const minX = BALL_RADIUS + 10;
+      const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
+      const minY = BALL_RADIUS + 10;
+      const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
+      const clampedX = Math.max(minX, Math.min(maxX, touchX));
+      const clampedY = Math.max(minY, Math.min(maxY, touchY));
+      const minDistanceSq = BALL_RADIUS * 2 * (BALL_RADIUS * 2);
+      const wouldCollide = balls.some((ball) => {
+        if (ball.id === 0 || ball.isPocketed) return false;
+        const dx = clampedX - ball.x;
+        const dy = clampedY - ball.y;
+        return dx * dx + dy * dy < minDistanceSq;
+      });
+
+      if (!wouldCollide) {
+        lastCueBallDragPosRef.current = { x: clampedX, y: clampedY };
+        moveCueBall(clampedX, clampedY);
+        broadcastCueBallMove(clampedX, clampedY);
+      } else {
+        broadcastCueBallMove(cueBall.x, cueBall.y);
+      }
+    } else if (wasDraggingCueBall) {
       broadcastCueBallMove(cueBall.x, cueBall.y);
     }
+    lastCueBallDragPosRef.current = null;
 
     if (isAimingInBallInHand) {
       setIsAimingInBallInHand(false);

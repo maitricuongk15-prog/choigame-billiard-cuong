@@ -1,5 +1,6 @@
 // hooks/useTwoPlayerGameLogic.ts - PHẦN 1/2
 import { useState, useEffect, useRef } from "react";
+import { Platform } from "react-native";
 import { getInitialBallsByMode } from "../constants/billiard";
 import {
   GAME_CONFIG,
@@ -78,6 +79,13 @@ export const useTwoPlayerGameLogic = (options?: {
   gameMode?: GameMode;
 }) => {
   const MOTION_EPSILON = 0.01;
+  const MAX_SUBSTEPS = Platform.OS === "web" ? 8 : 4;
+  const ENABLE_DEBUG_LOGS = false;
+  const debugLog = (...args: unknown[]) => {
+    if (ENABLE_DEBUG_LOGS) {
+      console.log(...args);
+    }
+  };
   const REMOTE_BLEND_DISTANCE = BALL_RADIUS * 1.8;
   const REMOTE_POSITION_BLEND = 0.45;
   const REMOTE_VELOCITY_BLEND = 0.6;
@@ -221,7 +229,10 @@ export const useTwoPlayerGameLogic = (options?: {
       return speed > max ? speed : max;
     }, 0);
     if (maxSpeed <= BALL_RADIUS * 0.45) return 1;
-    return Math.min(8, Math.max(1, Math.ceil(maxSpeed / (BALL_RADIUS * 0.45))));
+    return Math.min(
+      MAX_SUBSTEPS,
+      Math.max(1, Math.ceil(maxSpeed / (BALL_RADIUS * 0.45))),
+    );
   };
 
   /* ================= GAME LOOP ================= */
@@ -352,7 +363,7 @@ export const useTwoPlayerGameLogic = (options?: {
         );
 
         if (stillMoving) {
-          console.log("[END TURN CHECK] Bi vẫn đang lăn, chờ thêm...");
+          debugLog("[END TURN CHECK] Bi vẫn đang lăn, chờ thêm...");
           isProcessingTurn.current = false;
         } else {
           endTurn(balls);
@@ -622,16 +633,16 @@ export const useTwoPlayerGameLogic = (options?: {
       });
     };
 
-    console.log("=== END TURN DEBUG ===");
-    console.log("firstBallHit:", firstBallHit.current?.id);
-    console.log("cueBallPocketed:", cueBallPocketed.current);
-    console.log(
+    debugLog("=== END TURN DEBUG ===");
+    debugLog("firstBallHit:", firstBallHit.current?.id);
+    debugLog("cueBallPocketed:", cueBallPocketed.current);
+    debugLog(
       "pocketedBalls IDs:",
       pocketedBalls.map((b) => b.id),
     );
-    console.log("turnPhase:", turnPhase.current);
-    console.log("currentPlayer ballType:", currentPlayer.ballType);
-    console.log("======================");
+    debugLog("turnPhase:", turnPhase.current);
+    debugLog("currentPlayer ballType:", currentPlayer.ballType);
+    debugLog("======================");
 
     if (ball8 && hasRemainingBalls(currentIndex)) {
       gameOver = true;
@@ -708,13 +719,13 @@ export const useTwoPlayerGameLogic = (options?: {
         shouldChangeTurn = true;
         givesBallInHand = true;
         messageText = "❌ Không chạm bi! Đối thủ có ball in hand";
-        console.log("[OPEN PHASE] Không chạm bi");
+        debugLog("[OPEN PHASE] Không chạm bi");
       } else if (firstBallHit.current.id === 8) {
         shouldChangeTurn = true;
         givesBallInHand = true;
         messageText =
           "❌ Không được chạm bi 8 đầu tiên! Đối thủ có ball in hand";
-        console.log("[OPEN PHASE] Chạm bi 8");
+        debugLog("[OPEN PHASE] Chạm bi 8");
       } else if (pocketedBalls.length > 0) {
         if (solids.length > 0 && stripes.length === 0) {
           assignBallType("solid");
@@ -722,25 +733,25 @@ export const useTwoPlayerGameLogic = (options?: {
             solids.length * GAME_CONFIG.POINTS_PER_BALL;
           messageText = `🎯 ${currentPlayer.name} chọn BI MÀU (1-7)! +${solids.length * 10}Đ`;
           shouldChangeTurn = false;
-          console.log("[OPEN PHASE] Vô solid → xác định solid");
+          debugLog("[OPEN PHASE] Vô solid → xác định solid");
         } else if (stripes.length > 0 && solids.length === 0) {
           assignBallType("striped");
           newPlayers[currentIndex].score +=
             stripes.length * GAME_CONFIG.POINTS_PER_BALL;
           messageText = `🎯 ${currentPlayer.name} chọn BI KHOANG (9-15)! +${stripes.length * 10}Đ`;
           shouldChangeTurn = false;
-          console.log("[OPEN PHASE] Vô striped → xác định striped");
+          debugLog("[OPEN PHASE] Vô striped → xác định striped");
         } else if (solids.length > 0 && stripes.length > 0) {
           newPlayers[currentIndex].score +=
             pocketedBalls.length * GAME_CONFIG.POINTS_PER_BALL;
           messageText = `⚫ Vô 2 loại! Đánh tiếp để quyết định. +${pocketedBalls.length * 10}Đ`;
           shouldChangeTurn = false;
-          console.log("[OPEN PHASE] Vô 2 loại → Đánh tiếp");
+          debugLog("[OPEN PHASE] Vô 2 loại → Đánh tiếp");
         }
       } else {
         shouldChangeTurn = true;
         messageText = "⚫ Không vô bi. Đổi lượt!";
-        console.log("[OPEN PHASE] Chạm bi nhưng không vô");
+        debugLog("[OPEN PHASE] Chạm bi nhưng không vô");
       }
     } else {
       const hit = firstBallHit.current;
@@ -756,30 +767,30 @@ export const useTwoPlayerGameLogic = (options?: {
         shouldChangeTurn = true;
         givesBallInHand = true;
         messageText = "❌ Không chạm bi! Đối thủ có ball in hand";
-        console.log("[DETERMINED] Không chạm bi");
+        debugLog("[DETERMINED] Không chạm bi");
       } else if (ball8 && !hasRemainingBalls(currentIndex)) {
         gameOver = true;
         winner = currentPlayer.id;
         winReason = "ball8_win";
         newPlayers[currentIndex].score += 50;
         messageText = `🏆 ${currentPlayer.name} CHIẾN THẮNG!`;
-        console.log("[DETERMINED] Vô bi 8 → thắng");
+        debugLog("[DETERMINED] Vô bi 8 → thắng");
       } else if (!hasRemainingBalls(currentIndex)) {
         if (hit.id !== 8) {
           shouldChangeTurn = true;
           givesBallInHand = true;
           messageText = "❌ Phải đánh bi 8! Đối thủ có ball in hand";
-          console.log("[DETERMINED] Đã hết bi nhưng chạm sai bi");
+          debugLog("[DETERMINED] Đã hết bi nhưng chạm sai bi");
         } else {
           shouldChangeTurn = true;
           messageText = "⚫ Trượt bi 8. Đổi lượt!";
-          console.log("[DETERMINED] Trượt bi 8");
+          debugLog("[DETERMINED] Trượt bi 8");
         }
       } else if (hit.id !== 8 && !isCorrectBall(hit)) {
         shouldChangeTurn = true;
         givesBallInHand = true;
         messageText = "❌ Chạm sai bi! Đối thủ có ball in hand";
-        console.log("[DETERMINED] Chạm sai loại bi");
+        debugLog("[DETERMINED] Chạm sai loại bi");
       } else if (pocketedBalls.length > 0) {
         const correctBalls = pocketedBalls.filter(
           (b) => b.id !== 8 && isCorrectBall(b),
@@ -790,16 +801,16 @@ export const useTwoPlayerGameLogic = (options?: {
             correctBalls.length * GAME_CONFIG.POINTS_PER_BALL;
           messageText = `🎯 Vô ${correctBalls.length} bi! +${correctBalls.length * 10}Đ`;
           shouldChangeTurn = false;
-          console.log("[DETERMINED] Vô bi đúng");
+          debugLog("[DETERMINED] Vô bi đúng");
         } else {
           shouldChangeTurn = true;
           messageText = "⚫ Vô bi đối thủ. Đổi lượt!";
-          console.log("[DETERMINED] Vô bi sai");
+          debugLog("[DETERMINED] Vô bi sai");
         }
       } else {
         shouldChangeTurn = true;
         messageText = "⚫ Không vô bi. Đổi lượt!";
-        console.log("[DETERMINED] Chạm bi nhưng không vô");
+        debugLog("[DETERMINED] Chạm bi nhưng không vô");
       }
     }
 
