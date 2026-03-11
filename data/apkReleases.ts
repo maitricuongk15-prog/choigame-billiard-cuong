@@ -12,15 +12,15 @@ export const apkReleases: ApkRelease[] = [
   {
     version: "1.0.0",
     buildNumber: 1,
-    releaseDate: "2026-03-01",
-    apkUrl: "https://expo.dev/artifacts/eas/r4Gq9kp56Qwb4PQMwRZ355.apk",
+    releaseDate: "2026-03-11",
+    apkUrl: "https://expo.dev/artifacts/eas/8MQSFUkdTX3qJjyVzoRhTq.apk",
     sizeMb: 83.7,
     minAndroid: "Android 8.0+",
     notes: [
-      "Thêm hệ thống xu và cửa hàng gậy.",
-      "Thêm chế độ đặt cược theo phòng.",
-      "Thêm nhiệm vụ hằng ngày nhận xu.",
-      "Cải thiện đồng bộ kết quả trận và tiến độ nhiệm vụ.",
+      "Cap nhat snapshot moi nhat cua game.",
+      "Da day ban len GitHub va kich hoat lai Vercel deploy.",
+      "Them APK moi tu EAS build cho Android.",
+      "Bao gom cac thay doi gan day ve AI, pocket va HUD.",
     ],
   },
   {
@@ -31,9 +31,8 @@ export const apkReleases: ApkRelease[] = [
     sizeMb: 83.7,
     minAndroid: "Android 8.0+",
     notes: [
-      "Ra mắt phiên bản multiplayer cơ bản.",
-      "Hỗ trợ tạo phòng, vào phòng theo mã, chơi 2 người.",
+      "Ra mat phien ban multiplayer co ban.",
+      "Ho tro tao phong, vao phong theo ma, choi 2 nguoi.",
     ],
   },
 ];
-
