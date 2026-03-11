@@ -34,7 +34,7 @@ export const useAimControl = ({
   const lastAimUpdateAtRef = useRef(0);
   const lastPowerUpdateAtRef = useRef(0);
   const lastAimValueRef = useRef(0);
-  const lastPowerValueRef = useRef(GAME_CONFIG.DEFAULT_POWER);
+  const lastPowerValueRef = useRef<number>(GAME_CONFIG.DEFAULT_POWER);
 
   // Xử lý chạm trên bàn bi
   const handleTableTouchStart = (event: any) => {

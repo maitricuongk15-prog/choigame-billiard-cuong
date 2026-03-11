@@ -11,6 +11,7 @@ export interface RoomConfig {
   playerCount: PlayerCount;
   betAmount: number;
   isRanked: boolean;
+  aiElo?: number;
 }
 
 interface GameContextType {

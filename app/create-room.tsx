@@ -20,6 +20,8 @@ import {
 import { createRoom } from "../services/roomService";
 import { getErrorMessage, isInsufficientCoinsError } from "../utils/errorMessage";
 
+const AI_ELO_OPTIONS = [600, 1200, 1800, 2400] as const;
+
 export default function CreateRoomScreen() {
   const { setRoomId, setRoomCode, setRoomConfig, setPlayerNames } = useGameContext();
 
@@ -29,6 +31,7 @@ export default function CreateRoomScreen() {
   const [gameMode, setGameMode] = useState<GameMode>("8ball");
   const [playerCount, setPlayerCount] = useState<PlayerCount>(2);
   const [betAmount, setBetAmount] = useState("1000");
+  const [aiElo, setAiElo] = useState<(typeof AI_ELO_OPTIONS)[number]>(1200);
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -43,11 +46,12 @@ export default function CreateRoomScreen() {
         playerCount: 2,
         betAmount: 0,
         isRanked: false,
+        aiElo,
       };
       setRoomId("RANDOM");
       setRoomCode(null);
       setRoomConfig(config);
-      setPlayerNames("Bạn", "Máy");
+      setPlayerNames("Bạn", `Máy ELO ${aiElo}`);
       router.push("/explore");
       return;
     }
@@ -307,6 +311,49 @@ export default function CreateRoomScreen() {
             </View>
           </View>
         </View>
+
+        {gameMode === "ai" && (
+          <View style={styles.section}>
+            <View style={styles.playerCountHeader}>
+              <Text style={styles.sectionTitle}>Độ khó máy</Text>
+              <View style={styles.modeBadge}>
+                <Text style={styles.modeBadgeText}>ELO</Text>
+              </View>
+            </View>
+
+            <View style={styles.aiEloRow}>
+              {AI_ELO_OPTIONS.map((elo) => {
+                const isSelected = aiElo === elo;
+                return (
+                  <TouchableOpacity
+                    key={elo}
+                    style={[
+                      styles.aiEloButton,
+                      isSelected && styles.aiEloButtonActive,
+                    ]}
+                    onPress={() => {
+                      setCreateError(null);
+                      setAiElo(elo);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.aiEloButtonText,
+                        isSelected && styles.aiEloButtonTextActive,
+                      ]}
+                    >
+                      {elo}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.aiEloHint}>
+              600 = dễ | 1200 = trung bình | 1800 = khá | 2400 = rất mạnh
+            </Text>
+          </View>
+        )}
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Cược mỗi người (xu)</Text>
@@ -611,6 +658,39 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "bold",
     color: "#11d452",
+  },
+  aiEloRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  aiEloButton: {
+    minWidth: 76,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#1a3524",
+    borderWidth: 1,
+    borderColor: "#2a4535",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiEloButtonActive: {
+    backgroundColor: "rgba(17, 212, 82, 0.18)",
+    borderColor: "#11d452",
+  },
+  aiEloButtonText: {
+    color: "#cbd5e1",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  aiEloButtonTextActive: {
+    color: "#11d452",
+  },
+  aiEloHint: {
+    marginTop: 10,
+    color: "#94a3b8",
+    fontSize: 12,
   },
   playerCountToggle: {
     position: "relative",

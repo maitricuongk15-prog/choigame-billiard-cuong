@@ -62,6 +62,115 @@ type GameStateBroadcastPacket = {
   state: SerializedGameState;
 };
 
+type AiSkillProfile = {
+  elo: number;
+  thinkMinMs: number;
+  thinkMaxMs: number;
+  angleJitter: number;
+  powerJitter: number;
+  targetPool: number;
+  randomTargetChance: number;
+  strategicShotChance: number;
+  placementAttempts: number;
+  placementSpread: number;
+  basePower: number;
+  distancePowerFactor: number;
+  maxPower: number;
+  lineClearanceMultiplier: number;
+};
+
+const AI_ELO_PRESETS: readonly AiSkillProfile[] = [
+  {
+    elo: 600,
+    thinkMinMs: 700,
+    thinkMaxMs: 1200,
+    angleJitter: 0.14,
+    powerJitter: 1.6,
+    targetPool: 2,
+    randomTargetChance: 0.18,
+    strategicShotChance: 0.55,
+    placementAttempts: 28,
+    placementSpread: 1.15,
+    basePower: 5.1,
+    distancePowerFactor: 0.025,
+    maxPower: 15.3,
+    lineClearanceMultiplier: 1.02,
+  },
+  {
+    elo: 1200,
+    thinkMinMs: 500,
+    thinkMaxMs: 900,
+    angleJitter: 0.08,
+    powerJitter: 0.95,
+    targetPool: 1,
+    randomTargetChance: 0.08,
+    strategicShotChance: 0.82,
+    placementAttempts: 42,
+    placementSpread: 1,
+    basePower: 5.3,
+    distancePowerFactor: 0.028,
+    maxPower: 15.8,
+    lineClearanceMultiplier: 1.08,
+  },
+  {
+    elo: 1800,
+    thinkMinMs: 320,
+    thinkMaxMs: 650,
+    angleJitter: 0.035,
+    powerJitter: 0.5,
+    targetPool: 1,
+    randomTargetChance: 0.02,
+    strategicShotChance: 0.95,
+    placementAttempts: 64,
+    placementSpread: 0.9,
+    basePower: 5.6,
+    distancePowerFactor: 0.03,
+    maxPower: 16.2,
+    lineClearanceMultiplier: 1.14,
+  },
+  {
+    elo: 2400,
+    thinkMinMs: 180,
+    thinkMaxMs: 420,
+    angleJitter: 0.018,
+    powerJitter: 0.22,
+    targetPool: 1,
+    randomTargetChance: 0,
+    strategicShotChance: 1,
+    placementAttempts: 96,
+    placementSpread: 0.82,
+    basePower: 5.8,
+    distancePowerFactor: 0.031,
+    maxPower: 16.5,
+    lineClearanceMultiplier: 1.2,
+  },
+];
+
+const distancePointToSegment = (
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+) => {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abLengthSquared = abx * abx + aby * aby;
+
+  if (abLengthSquared <= 0.0001) {
+    return Math.hypot(px - ax, py - ay);
+  }
+
+  const t = Math.max(
+    0,
+    Math.min(1, ((px - ax) * abx + (py - ay) * aby) / abLengthSquared),
+  );
+  const closestX = ax + abx * t;
+  const closestY = ay + aby * t;
+  return Math.hypot(px - closestX, py - closestY);
+};
+
 export default function BilliardGame() {
   const { roomId, roomHostId, roomConfig, player1Name, player2Name, setPlayerNames } =
     useGameContext();
@@ -81,6 +190,15 @@ export default function BilliardGame() {
     !!user &&
     !!roomHostId &&
     String(user.id) === String(roomHostId);
+  const aiElo = isAiMatch
+    ? Math.max(600, Math.min(2400, Number(roomConfig?.aiElo ?? 1200)))
+    : 1200;
+  const aiSkillProfile = useMemo(() => {
+    return (
+      AI_ELO_PRESETS.find((preset) => aiElo <= preset.elo) ??
+      AI_ELO_PRESETS[AI_ELO_PRESETS.length - 1]
+    );
+  }, [aiElo]);
 
   const tableLayout = useMemo(() => {
     const isLandscapeViewport = screenWidth > screenHeight;
@@ -223,8 +341,10 @@ export default function BilliardGame() {
   const applyRemoteStateRafRef = useRef<number | null>(null);
   const sendGameStateRef = useRef<() => void>(() => {});
   const aiTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moveCueBallRef = useRef(moveCueBall);
   const lastCueBallDragAtRef = useRef(0);
   const lastCueBallDragPosRef = useRef<{ x: number; y: number } | null>(null);
+  moveCueBallRef.current = moveCueBall;
 
   const myPlayerNumber = isMultiplayer ? (isHost ? 1 : 2) : isAiMatch ? 1 : null;
   const isMyTurn = !isMultiplayer
@@ -235,8 +355,9 @@ export default function BilliardGame() {
         gameState.currentPlayer === myPlayerNumber;
 
   const player1DisplayName = player1Name?.trim() || gameState.players[0].name;
-  const player2DisplayName = player2Name?.trim() || (isAiMatch ? "MĂ¡y" : gameState.players[1].name);
-
+  const player2DisplayName =
+    player2Name?.trim() ||
+    (isAiMatch ? `Máy ELO ${aiSkillProfile.elo}` : gameState.players[1].name);
   sendGameStateRef.current = () => {
     if (!isHost || !isMultiplayer || !gameChannelRef.current) return;
     outgoingStateSeqRef.current += 1;
@@ -257,7 +378,7 @@ export default function BilliardGame() {
     settledBetKeyRef.current = null;
     if (isMultiplayer && !isHost) return;
     resetGame();
-  }, [roomId, roomConfig?.gameMode, isMultiplayer, isHost]);
+  }, [roomId, roomConfig?.gameMode, roomConfig?.aiElo, isMultiplayer, isHost]);
 
   useEffect(() => {
     void ScreenOrientation.lockAsync(
@@ -277,9 +398,10 @@ export default function BilliardGame() {
 
   useEffect(() => {
     if (!isAiMatch) return;
-    if (player1Name === "Bạn" && player2Name === "Máy") return;
-    setPlayerNames("Bạn", "Máy");
-  }, [isAiMatch, player1Name, player2Name, setPlayerNames]);
+    const nextAiName = `Máy ELO ${aiSkillProfile.elo}`;
+    if (player1Name === "Bạn" && player2Name === nextAiName) return;
+    setPlayerNames("Bạn", nextAiName);
+  }, [aiSkillProfile.elo, isAiMatch, player1Name, player2Name, setPlayerNames]);
 
   useEffect(() => {
     if (!user) {
@@ -653,74 +775,295 @@ export default function BilliardGame() {
     });
   };
 
-  const findAiCueBallPlacement = (currentBalls: Ball[]) => {
-    const minX = BALL_RADIUS + 10;
-    const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
-    const minY = BALL_RADIUS + 10;
-    const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
-
-    for (let i = 0; i < 40; i++) {
-      const x = minX + Math.random() * (maxX - minX);
-      const y = minY + Math.random() * (maxY - minY);
-      const collides = currentBalls.some((ball) => {
-        if (ball.id === 0 || ball.isPocketed) return false;
-        const dx = x - ball.x;
-        const dy = y - ball.y;
-        return Math.sqrt(dx * dx + dy * dy) < BALL_RADIUS * 2;
+  const getAiLegalTargetBalls = useCallback(
+    (currentBalls: Ball[]) => {
+      const aiPlayer = gameState.players[1];
+      const hasRemainingOwnBalls = currentBalls.some((ball) => {
+        if (ball.isPocketed || ball.id === 0 || ball.id === 8) return false;
+        if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
+        if (aiPlayer.ballType === "striped") return ball.id >= 9 && ball.id <= 15;
+        return true;
       });
-      if (!collides) {
-        return { x, y };
+
+      return currentBalls.filter((ball) => {
+        if (ball.isPocketed || ball.id === 0) return false;
+
+        if (aiPlayer.ballType === "none") {
+          return ball.id !== 8;
+        }
+
+        if (!hasRemainingOwnBalls) {
+          return ball.id === 8;
+        }
+
+        if (ball.id === 8) return false;
+        if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
+        return ball.id >= 9 && ball.id <= 15;
+      });
+    },
+    [gameState.players],
+  );
+
+  const isAiLaneClear = useCallback(
+    (
+      startX: number,
+      startY: number,
+      endX: number,
+      endY: number,
+      currentBalls: Ball[],
+      ignoredBallIds: number[] = [],
+      clearanceMultiplier = 1,
+    ) => {
+      const clearanceRadius = BALL_RADIUS * 2.05 * clearanceMultiplier;
+      return !currentBalls.some((ball) => {
+        if (ball.isPocketed || ignoredBallIds.includes(ball.id)) return false;
+        const distanceToLane = distancePointToSegment(
+          ball.x,
+          ball.y,
+          startX,
+          startY,
+          endX,
+          endY,
+        );
+        return distanceToLane < clearanceRadius;
+      });
+    },
+    [],
+  );
+
+  const findBestAiPocketPlan = useCallback(
+    (currentBalls: Ball[], cueOrigin?: { x: number; y: number }) => {
+      const cue = cueOrigin ?? currentBalls[0];
+      if (!cue) return null;
+
+      const legalBalls = getAiLegalTargetBalls(currentBalls);
+      const candidates =
+        legalBalls.length > 0
+          ? legalBalls
+          : currentBalls.filter((ball) => !ball.isPocketed && ball.id !== 0);
+      if (candidates.length === 0) return null;
+
+      const minX = BALL_RADIUS + 10;
+      const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
+      const minY = BALL_RADIUS + 10;
+      const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
+
+      let bestPlan: {
+        targetBall: Ball;
+        aimX: number;
+        aimY: number;
+        score: number;
+      } | null = null;
+
+      for (const targetBall of candidates) {
+        for (const pocket of POCKETS) {
+          const toPocketX = pocket.x - targetBall.x;
+          const toPocketY = pocket.y - targetBall.y;
+          const pocketDistance = Math.hypot(toPocketX, toPocketY);
+          if (pocketDistance <= BALL_RADIUS * 2.1) continue;
+
+          const unitX = toPocketX / pocketDistance;
+          const unitY = toPocketY / pocketDistance;
+          const aimX = targetBall.x - unitX * BALL_RADIUS * 2;
+          const aimY = targetBall.y - unitY * BALL_RADIUS * 2;
+
+          if (aimX < minX || aimX > maxX || aimY < minY || aimY > maxY) {
+            continue;
+          }
+
+          const cueLaneClear = isAiLaneClear(
+            cue.x,
+            cue.y,
+            aimX,
+            aimY,
+            currentBalls,
+            [0, targetBall.id],
+            aiSkillProfile.lineClearanceMultiplier,
+          );
+          const objectLaneClear = isAiLaneClear(
+            targetBall.x,
+            targetBall.y,
+            pocket.x,
+            pocket.y,
+            currentBalls,
+            [0, targetBall.id],
+            aiSkillProfile.lineClearanceMultiplier * 0.96,
+          );
+
+          if (!cueLaneClear || !objectLaneClear) continue;
+
+          const cueDistance = Math.hypot(aimX - cue.x, aimY - cue.y);
+          const cueToTargetX = targetBall.x - cue.x;
+          const cueToTargetY = targetBall.y - cue.y;
+          const cueToTargetDistance = Math.hypot(cueToTargetX, cueToTargetY);
+          if (cueToTargetDistance <= BALL_RADIUS * 2) continue;
+
+          const cueDirX = cueToTargetX / cueToTargetDistance;
+          const cueDirY = cueToTargetY / cueToTargetDistance;
+          const pocketDirX = toPocketX / pocketDistance;
+          const pocketDirY = toPocketY / pocketDistance;
+          const alignment = Math.max(
+            -1,
+            Math.min(1, cueDirX * pocketDirX + cueDirY * pocketDirY),
+          );
+          const cutPenalty = Math.pow(1 - alignment, 2) * 260;
+          const railPenalty =
+            (Math.abs(targetBall.x - BALL_RADIUS) < 26 ||
+            Math.abs(targetBall.x - (TABLE_WIDTH - BALL_RADIUS)) < 26 ||
+            Math.abs(targetBall.y - BALL_RADIUS) < 26 ||
+            Math.abs(targetBall.y - (TABLE_HEIGHT - BALL_RADIUS)) < 26)
+              ? 24
+              : 0;
+          const edgePenalty =
+            Math.abs(targetBall.y - TABLE_HEIGHT / 2) * 0.015 +
+            Math.abs(targetBall.x - TABLE_WIDTH / 2) * 0.01;
+          const score =
+            cutPenalty +
+            railPenalty +
+            pocketDistance * 0.5 +
+            cueDistance * 0.2 +
+            cueToTargetDistance * 0.12 +
+            edgePenalty;
+
+          if (!bestPlan || score < bestPlan.score) {
+            bestPlan = {
+              targetBall,
+              aimX,
+              aimY,
+              score,
+            };
+          }
+        }
       }
-    }
 
-    return { x: 175, y: 300 };
-  };
+      return bestPlan;
+    },
+    [
+      aiSkillProfile.lineClearanceMultiplier,
+      getAiLegalTargetBalls,
+      isAiLaneClear,
+    ],
+  );
 
-  const pickAiTargetBall = (currentBalls: Ball[]) => {
-    const aiPlayer = gameState.players[1];
-    const cue = currentBalls[0];
-    if (!cue) return null;
+  const pickAiTargetBall = useCallback(
+    (currentBalls: Ball[], cueOrigin?: { x: number; y: number }) => {
+      const cue = cueOrigin ?? currentBalls[0];
+      if (!cue) return null;
 
-    const hasRemainingOwnBalls = currentBalls.some((ball) => {
-      if (ball.isPocketed || ball.id === 0 || ball.id === 8) return false;
-      if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
-      if (aiPlayer.ballType === "striped") return ball.id >= 9 && ball.id <= 15;
-      return true;
-    });
+      const legalBalls = getAiLegalTargetBalls(currentBalls);
+      const candidates =
+        legalBalls.length > 0
+          ? legalBalls
+          : currentBalls.filter((ball) => !ball.isPocketed && ball.id !== 0);
 
-    const legalBalls = currentBalls.filter((ball) => {
-      if (ball.isPocketed || ball.id === 0) return false;
+      if (candidates.length === 0) return null;
 
-      if (aiPlayer.ballType === "none") {
-        return ball.id !== 8;
+      const ranked = [...candidates]
+        .map((ball) => {
+          const cueDistance = Math.hypot(ball.x - cue.x, ball.y - cue.y);
+          const nearestPocketDistance = POCKETS.reduce((best, pocket) => {
+            return Math.min(best, Math.hypot(pocket.x - ball.x, pocket.y - ball.y));
+          }, Number.POSITIVE_INFINITY);
+          const laneClear = isAiLaneClear(
+            cue.x,
+            cue.y,
+            ball.x,
+            ball.y,
+            currentBalls,
+            [0, ball.id],
+            aiSkillProfile.lineClearanceMultiplier,
+          );
+          return {
+            ball,
+            score:
+              cueDistance * 0.72 +
+              nearestPocketDistance * 0.28 +
+              (laneClear ? 0 : 120),
+          };
+        })
+        .sort((a, b) => a.score - b.score);
+
+      if (Math.random() < aiSkillProfile.randomTargetChance) {
+        return ranked[Math.floor(Math.random() * ranked.length)]?.ball ?? ranked[0].ball;
       }
 
-      if (!hasRemainingOwnBalls) {
-        return ball.id === 8;
+      const poolSize = Math.max(
+        1,
+        Math.min(aiSkillProfile.targetPool, ranked.length),
+      );
+      return ranked[Math.floor(Math.random() * poolSize)]?.ball ?? ranked[0].ball;
+    },
+    [
+      aiSkillProfile.lineClearanceMultiplier,
+      aiSkillProfile.randomTargetChance,
+      aiSkillProfile.targetPool,
+      getAiLegalTargetBalls,
+      isAiLaneClear,
+    ],
+  );
+
+  const findAiCueBallPlacement = useCallback(
+    (currentBalls: Ball[]) => {
+      const minX = BALL_RADIUS + 10;
+      const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
+      const minY = BALL_RADIUS + 10;
+      const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
+      const centerX = TABLE_WIDTH * 0.28;
+      const centerY = TABLE_HEIGHT / 2;
+      const spreadX =
+        ((maxX - minX) / 2) * Math.max(0.45, aiSkillProfile.placementSpread);
+      const spreadY =
+        ((maxY - minY) / 2) * Math.max(0.45, aiSkillProfile.placementSpread);
+
+      let bestPlacement: { x: number; y: number } | null = null;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < aiSkillProfile.placementAttempts; i++) {
+        const x = Math.max(
+          minX,
+          Math.min(maxX, centerX + (Math.random() * 2 - 1) * spreadX),
+        );
+        const y = Math.max(
+          minY,
+          Math.min(maxY, centerY + (Math.random() * 2 - 1) * spreadY),
+        );
+        const collides = currentBalls.some((ball) => {
+          if (ball.id === 0 || ball.isPocketed) return false;
+          return Math.hypot(x - ball.x, y - ball.y) < BALL_RADIUS * 2;
+        });
+
+        if (collides) continue;
+
+        const plan = findBestAiPocketPlan(currentBalls, { x, y });
+        if (plan) {
+          if (plan.score < bestScore) {
+            bestScore = plan.score;
+            bestPlacement = { x, y };
+          }
+          continue;
+        }
+
+        const fallbackTarget = pickAiTargetBall(currentBalls, { x, y });
+        if (!fallbackTarget) continue;
+
+        const fallbackScore =
+          Math.hypot(fallbackTarget.x - x, fallbackTarget.y - y) *
+          aiSkillProfile.placementSpread;
+        if (fallbackScore < bestScore) {
+          bestScore = fallbackScore;
+          bestPlacement = { x, y };
+        }
       }
 
-      if (ball.id === 8) return false;
-      if (aiPlayer.ballType === "solid") return ball.id >= 1 && ball.id <= 7;
-      return ball.id >= 9 && ball.id <= 15;
-    });
-
-    const candidates =
-      legalBalls.length > 0
-        ? legalBalls
-        : currentBalls.filter((ball) => !ball.isPocketed && ball.id !== 0);
-
-    if (candidates.length === 0) return null;
-
-    const nearest = [...candidates]
-      .sort((a, b) => {
-        const da = Math.hypot(a.x - cue.x, a.y - cue.y);
-        const db = Math.hypot(b.x - cue.x, b.y - cue.y);
-        return da - db;
-      })
-      .slice(0, Math.min(3, candidates.length));
-
-    return nearest[Math.floor(Math.random() * nearest.length)] ?? nearest[0];
-  };
+      return bestPlacement ?? { x: 175, y: 300 };
+    },
+    [
+      aiSkillProfile.placementAttempts,
+      aiSkillProfile.placementSpread,
+      findBestAiPocketPlan,
+      pickAiTargetBall,
+    ],
+  );
 
   useEffect(() => {
     if (!isAiMatch) return;
@@ -732,7 +1075,8 @@ export default function BilliardGame() {
       !isMoving &&
       !pushOutDecisionPending &&
       !turnTimeoutBlockRef.current &&
-      !turnTimeoutBlockShooting;
+      !turnTimeoutBlockShooting &&
+      !gameState.turnEnded;
 
     if (!canAct) {
       if (aiTurnTimeoutRef.current) {
@@ -744,7 +1088,13 @@ export default function BilliardGame() {
 
     if (aiTurnTimeoutRef.current) return;
 
-    const thinkDelayMs = 700 + Math.floor(Math.random() * 700);
+    const thinkDelayMs =
+      aiSkillProfile.thinkMinMs +
+      Math.floor(
+        Math.random() *
+          (aiSkillProfile.thinkMaxMs - aiSkillProfile.thinkMinMs + 1),
+      );
+
     aiTurnTimeoutRef.current = setTimeout(() => {
       aiTurnTimeoutRef.current = null;
 
@@ -754,24 +1104,47 @@ export default function BilliardGame() {
         const currentBalls = ballsRef.current;
         const cueBallNow = currentBalls[0];
         if (!cueBallNow || cueBallNow.isPocketed) return;
+        const aiPlayer = gameState.players[1];
+        const mustUseBestPlan = aiPlayer.ballType === "none";
 
-        const targetBall = pickAiTargetBall(currentBalls);
-        const baseAngle = targetBall
-          ? Math.atan2(targetBall.y - cueBallNow.y, targetBall.x - cueBallNow.x)
-          : Math.random() * Math.PI * 2;
-        const angle = baseAngle + (Math.random() - 0.5) * 0.16;
-        const distance = targetBall
-          ? Math.hypot(targetBall.x - cueBallNow.x, targetBall.y - cueBallNow.y)
-          : 180;
-        const rawPower = 5.5 + distance * 0.03 + Math.random() * 2.6;
-        const power = Math.max(5, Math.min(16, rawPower));
+        const pocketPlan =
+          mustUseBestPlan || Math.random() < aiSkillProfile.strategicShotChance
+            ? findBestAiPocketPlan(currentBalls)
+            : null;
+        const targetBall = pocketPlan?.targetBall ?? pickAiTargetBall(currentBalls);
+        const baseAngle = pocketPlan
+          ? Math.atan2(pocketPlan.aimY - cueBallNow.y, pocketPlan.aimX - cueBallNow.x)
+          : targetBall
+            ? Math.atan2(targetBall.y - cueBallNow.y, targetBall.x - cueBallNow.x)
+            : Math.random() * Math.PI * 2;
+        const angle =
+          baseAngle + (Math.random() - 0.5) * aiSkillProfile.angleJitter;
+        const distance = pocketPlan
+          ? Math.hypot(pocketPlan.aimX - cueBallNow.x, pocketPlan.aimY - cueBallNow.y)
+          : targetBall
+            ? Math.hypot(targetBall.x - cueBallNow.x, targetBall.y - cueBallNow.y)
+            : 180;
+        const rawPower =
+          aiSkillProfile.basePower +
+          distance * aiSkillProfile.distancePowerFactor +
+          (Math.random() - 0.5) * aiSkillProfile.powerJitter;
+        const power = Math.max(5, Math.min(aiSkillProfile.maxPower, rawPower));
         handleShoot(angle, power);
       };
 
       if (ballInHand) {
-        const placement = findAiCueBallPlacement(ballsRef.current);
-        moveCueBall(placement.x, placement.y);
-        setTimeout(shootNow, 140);
+        let placed = false;
+        for (let attempt = 0; attempt < 3 && !placed; attempt++) {
+          const placement = findAiCueBallPlacement(ballsRef.current);
+          placed = moveCueBallRef.current(placement.x, placement.y) === true;
+        }
+        if (!placed) {
+          return;
+        }
+        setTimeout(
+          shootNow,
+          Math.max(120, Math.round(aiSkillProfile.thinkMinMs * 0.25)),
+        );
         return;
       }
 
@@ -785,13 +1158,17 @@ export default function BilliardGame() {
       }
     };
   }, [
-    isAiMatch,
-    gameState.currentPlayer,
-    gameState.players,
-    showGameResult,
-    isMoving,
+    aiSkillProfile,
     ballInHand,
+    findAiCueBallPlacement,
+    findBestAiPocketPlan,
+    gameState.currentPlayer,
+    gameState.turnEnded,
+    isAiMatch,
+    isMoving,
+    pickAiTargetBall,
     pushOutDecisionPending,
+    showGameResult,
     turnTimeoutBlockShooting,
   ]);
 
@@ -2348,7 +2725,3 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 });
-
-
-
-

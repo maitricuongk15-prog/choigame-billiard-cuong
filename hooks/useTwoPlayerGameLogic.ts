@@ -113,6 +113,10 @@ export const useTwoPlayerGameLogic = (options?: {
   const [gameStartTime] = useState(Date.now());
 
   const animationFrame = useRef<number | null>(null);
+  const latestBallsRef = useRef<Ball[]>(balls);
+  const ballInHandRef = useRef(ballInHand);
+  const ballInHandPlacedRef = useRef(ballInHandPlaced);
+  const pushOutDecisionPendingRef = useRef(pushOutDecisionPending);
   const ballsPocketedThisTurn = useRef<Set<number>>(new Set());
   const cueBallPocketed = useRef(false);
   const firstBallHit = useRef<Ball | null>(null);
@@ -131,6 +135,22 @@ export const useTwoPlayerGameLogic = (options?: {
   const caromHitOrder = useRef<number[]>([]);
   const caromCueCushionCount = useRef(0);
   const caromCushionsBeforeSecondHit = useRef(0);
+
+  useEffect(() => {
+    latestBallsRef.current = balls;
+  }, [balls]);
+
+  useEffect(() => {
+    ballInHandRef.current = ballInHand;
+  }, [ballInHand]);
+
+  useEffect(() => {
+    ballInHandPlacedRef.current = ballInHandPlaced;
+  }, [ballInHandPlaced]);
+
+  useEffect(() => {
+    pushOutDecisionPendingRef.current = pushOutDecisionPending;
+  }, [pushOutDecisionPending]);
 
   const getLowestBallIdOnTable = (currentBalls: Ball[]): number | null => {
     const remaining = currentBalls
@@ -854,10 +874,10 @@ export const useTwoPlayerGameLogic = (options?: {
   };
 
   const shootCueBall = (angle: number, power: number) => {
-    if (ballInHand && !ballInHandPlaced) {
+    if (ballInHandRef.current && !ballInHandPlacedRef.current) {
       return;
     }
-    if (pushOutDecisionPending) {
+    if (pushOutDecisionPendingRef.current) {
       return;
     }
 
@@ -868,7 +888,7 @@ export const useTwoPlayerGameLogic = (options?: {
     isProcessingTurn.current = false;
     ballsTouchedCushion.current = false;
     ballsTouchedCushionIds.current.clear();
-    requiredFirstBallId.current = getLowestBallIdOnTable(balls);
+    requiredFirstBallId.current = getLowestBallIdOnTable(latestBallsRef.current);
     setPushOutAvailableFor(null);
     caromHitOrder.current = [];
     caromCueCushionCount.current = 0;
@@ -880,12 +900,19 @@ export const useTwoPlayerGameLogic = (options?: {
       next[0].vy = Math.sin(angle) * power;
       return next;
     });
+    setGameState((prev) => ({
+      ...prev,
+      turnEnded: true,
+    }));
 
     hasShot.current = true;
 
     setBallInHand(false);
     setBallInHandPlaced(false);
     setPushOutDecisionPending(null);
+    ballInHandRef.current = false;
+    ballInHandPlacedRef.current = false;
+    pushOutDecisionPendingRef.current = null;
   };
 
   const setCueBallPosition = (x: number, y: number) => {
@@ -1022,6 +1049,9 @@ export const useTwoPlayerGameLogic = (options?: {
     setPushOutDecisionPending(null);
     setBallInHand(false);
     setBallInHandPlaced(false);
+    pushOutDecisionPendingRef.current = null;
+    ballInHandRef.current = false;
+    ballInHandPlacedRef.current = false;
     setMessage(
       playFromHere
         ? "Đối thủ nhận đánh tiếp từ vị trí push-out."
@@ -1031,7 +1061,7 @@ export const useTwoPlayerGameLogic = (options?: {
   };
 
   const moveCueBall = (x: number, y: number) => {
-    if (!ballInHand) return;
+    if (!ballInHandRef.current) return false;
 
     const minX = BALL_RADIUS + 10;
     const maxX = TABLE_WIDTH - BALL_RADIUS - 10;
@@ -1039,10 +1069,10 @@ export const useTwoPlayerGameLogic = (options?: {
     const maxY = TABLE_HEIGHT - BALL_RADIUS - 10;
 
     if (x < minX || x > maxX || y < minY || y > maxY) {
-      return;
+      return false;
     }
 
-    const wouldCollide = balls.some((ball) => {
+    const wouldCollide = latestBallsRef.current.some((ball) => {
       if (ball.id === 0 || ball.isPocketed) return false;
 
       const dx = x - ball.x;
@@ -1053,7 +1083,7 @@ export const useTwoPlayerGameLogic = (options?: {
     });
 
     if (wouldCollide) {
-      return;
+      return false;
     }
 
     setBalls((prev) => {
@@ -1066,6 +1096,8 @@ export const useTwoPlayerGameLogic = (options?: {
     });
 
     setBallInHandPlaced(true);
+    ballInHandPlacedRef.current = true;
+    return true;
   };
 
   const canShowPrediction = (aimedBall: Ball | null) => {
