@@ -1,9 +1,28 @@
 // app/_layout.tsx - ROOT LAYOUT + AUTH + MULTIPLAYER
 import { Stack } from "expo-router";
-import { View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 import { GameProvider } from "../context/gameContext";
 import { AuthProvider } from "../context/AuthContext";
 import InviteNotifications from "../components/inviteNotifications";
+import { Fonts } from "../constants/theme";
+
+const defaultFontStyle = { fontFamily: Fonts.sans };
+const TextWithDefaults = Text as typeof Text & { defaultProps?: { style?: any } };
+const TextInputWithDefaults = TextInput as typeof TextInput & { defaultProps?: { style?: any } };
+
+TextWithDefaults.defaultProps = TextWithDefaults.defaultProps || {};
+TextWithDefaults.defaultProps.style = Array.isArray(TextWithDefaults.defaultProps.style)
+  ? [...TextWithDefaults.defaultProps.style, defaultFontStyle]
+  : TextWithDefaults.defaultProps.style
+    ? [TextWithDefaults.defaultProps.style, defaultFontStyle]
+    : defaultFontStyle;
+
+TextInputWithDefaults.defaultProps = TextInputWithDefaults.defaultProps || {};
+TextInputWithDefaults.defaultProps.style = Array.isArray(TextInputWithDefaults.defaultProps.style)
+  ? [...TextInputWithDefaults.defaultProps.style, defaultFontStyle]
+  : TextInputWithDefaults.defaultProps.style
+    ? [TextInputWithDefaults.defaultProps.style, defaultFontStyle]
+    : defaultFontStyle;
 
 export default function RootLayout() {
   return (

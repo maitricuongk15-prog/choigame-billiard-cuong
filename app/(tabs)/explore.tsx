@@ -1269,23 +1269,23 @@ export default function BilliardGame() {
   const accentEndY = cueStartY + cueDy * 0.93;
 
   const statusMessage = !isMyTurn
-    ? `Dang cho luot doi thu (${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName})...`
+    ? `Đang chờ lượt đối thủ (${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName})...`
     : ballInHand
         ? ballInHandPlaced
-          ? `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Bi trang da dat xong | Keo ngoai bi de ngam va ban`
-          : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Keo bi trang de dat | Keo ben ngoai de ngam`
+          ? `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Bi trắng đã đặt xong | Kéo ngoài bi để ngắm và bắn`
+          : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Kéo bi trắng để đặt | Kéo bên ngoài để ngắm`
         : isMoving
           ? GAME_MESSAGES.BALLS_MOVING
           : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - ${GAME_MESSAGES.READY_TO_AIM}`;
   const statusMessageWithPushOut =
     pushOutDecisionPending &&
     pushOutDecisionPending.decider === gameState.currentPlayer
-      ? "Push Out: chọn Đánh tiếp hoặc Trả lượt."
+      ? "Lượt đẩy tự do: chọn Đánh tiếp hoặc Trả lượt."
       : isNineBallMode &&
           pushOutAvailableFor === gameState.currentPlayer &&
           !isMoving &&
           !showGameResult
-        ? "Bạn có thể khai báo Push Out ở lượt này."
+        ? "Bạn có thể khai báo lượt đẩy tự do ở lượt này."
         : statusMessage;
   const targetIsWrong = closestTarget ? isWrongBall(closestTarget.ball) : false;
   const aimColor = targetIsWrong ? "#FF0000" : currentPlayer.color;
@@ -2096,7 +2096,7 @@ export default function BilliardGame() {
             <View style={[styles.waitingTurnBox, { minHeight: tableLayout.sliderHeight }]}>
               <Text style={styles.waitingTurnText}>
                 {pushOutDecisionPending
-                  ? "Đang chờ chọn Push Out"
+                  ? "Đang chờ chọn lượt đẩy tự do"
                   : isAiMatch
                     ? "Máy đang đánh"
                     : "Đang chờ đối thủ"}
@@ -2119,7 +2119,7 @@ export default function BilliardGame() {
             hitSlop={mobileHitSlop}
             pressRetentionOffset={mobileHitSlop}
           >
-            <Text style={styles.buttonText}>Push Out</Text>
+            <Text style={styles.buttonText}>Đẩy tự do</Text>
           </TouchableOpacity>
         )}
 

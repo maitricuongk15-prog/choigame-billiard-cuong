@@ -17,10 +17,10 @@ export const apkReleases: ApkRelease[] = [
     sizeMb: 83.7,
     minAndroid: "Android 8.0+",
     notes: [
-      "Cap nhat snapshot moi nhat cua game.",
-      "Da day ban len GitHub va kich hoat lai Vercel deploy.",
-      "Them APK moi tu EAS build cho Android.",
-      "Bao gom cac thay doi gan day ve AI, pocket va HUD.",
+      "C?p nh?t snapshot m?i nh?t c?a game.",
+      "?? ??y b?n l?n GitHub v? k?ch ho?t l?i Vercel deploy.",
+      "Th?m APK m?i t? EAS build cho Android.",
+      "Bao g?m c?c thay ??i g?n ??y v? AI, l? b?n v? HUD.",
     ],
   },
   {
@@ -31,8 +31,9 @@ export const apkReleases: ApkRelease[] = [
     sizeMb: 83.7,
     minAndroid: "Android 8.0+",
     notes: [
-      "Ra mat phien ban multiplayer co ban.",
-      "Ho tro tao phong, vao phong theo ma, choi 2 nguoi.",
+      "Ra m?t phi?n b?n multiplayer c? b?n.",
+      "H? tr? t?o ph?ng, v?o ph?ng theo m? v? ch?i 2 ng??i.",
     ],
   },
 ];
+

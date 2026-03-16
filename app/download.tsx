@@ -40,7 +40,7 @@ export default function DownloadPage() {
 
       <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
         <View style={styles.heroCard}>
-          <Text style={styles.heroEyebrow}>BILLIARD GAME MOBILE</Text>
+          <Text style={styles.heroEyebrow}>TRÒ CHƠI BI-A DI ĐỘNG</Text>
           <Text style={styles.heroTitle}>Pool Multiplayer Việt Nam</Text>
           <Text style={styles.heroDesc}>
             Trò chơi bi-a online với tạo phòng, đặt cược xu, cửa hàng gậy và nhiệm vụ hằng ngày.
@@ -80,7 +80,7 @@ export default function DownloadPage() {
             <View style={styles.versionTopRow}>
               <View>
                 <Text style={styles.versionTitle}>
-                  v{release.version} (build {release.buildNumber})
+                  v{release.version} (bản dựng {release.buildNumber})
                 </Text>
                 <Text style={styles.versionDate}>
                   Phát hành: {formatReleaseDate(release.releaseDate)}
@@ -299,4 +299,3 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
-
