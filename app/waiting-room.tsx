@@ -147,6 +147,10 @@ export default function WaitingRoomScreen() {
       const name2 = p2?.profiles?.display_name?.trim() || "Người chơi 2";
       setPlayerNames(name1, name2);
     }
+    if (r?.status === "playing") {
+      setIsMatchmaking(false);
+      router.replace("/explore");
+    }
   };
 
   useEffect(() => {
@@ -1118,5 +1122,6 @@ const styles = StyleSheet.create({
   startButtonTextDisabled: { color: "#cbd5e1" },
   startButtonIcon: { fontSize: 20 },
 });
+
 
 

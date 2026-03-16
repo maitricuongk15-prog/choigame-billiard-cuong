@@ -476,7 +476,7 @@ export default function BilliardGame() {
           cueBallY?: number;
         };
         if (cueBallX != null && cueBallY != null) {
-          setCueBallPosition(cueBallX, cueBallY);
+          setCueBallPosition(cueBallX, cueBallY, true);
         }
         setTimeout(() => {
           shootCueBall(angle, p);
@@ -504,7 +504,7 @@ export default function BilliardGame() {
         };
         if (player === myPlayerNumber) return;
         if (x == null || y == null) return;
-        setCueBallPosition(x, y);
+        setCueBallPosition(x, y, true);
       })
       .on("broadcast", { event: "timeout_switch_turn" }, () => {
         if (!isHost) return;
@@ -1269,13 +1269,14 @@ export default function BilliardGame() {
   const accentEndY = cueStartY + cueDy * 0.93;
 
   const statusMessage = !isMyTurn
-    ? `Đang chờ lượt đối thủ (${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName})...`
+    ? `Dang cho luot doi thu (${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName})...`
     : ballInHand
-        ? `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Kéo bi trắng để đặt | Kéo bên ngoài để ngắm`
+        ? ballInHandPlaced
+          ? `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Bi trang da dat xong | Keo ngoai bi de ngam va ban`
+          : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - Keo bi trang de dat | Keo ben ngoai de ngam`
         : isMoving
           ? GAME_MESSAGES.BALLS_MOVING
           : `${gameState.currentPlayer === 1 ? player1DisplayName : player2DisplayName} - ${GAME_MESSAGES.READY_TO_AIM}`;
-
   const statusMessageWithPushOut =
     pushOutDecisionPending &&
     pushOutDecisionPending.decider === gameState.currentPlayer
@@ -1727,7 +1728,7 @@ export default function BilliardGame() {
         </View>
       </View>
 
-      {ballInHand && isMyTurn && (
+      {ballInHand && isMyTurn && !ballInHandPlaced && (
         <View style={styles.ballInHandNotice}>
           <Text style={styles.ballInHandText}>
             KEO BI TRANG DE DAT, KEO NGOAI BI DE NGAM

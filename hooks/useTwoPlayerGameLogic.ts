@@ -782,6 +782,13 @@ export const useTwoPlayerGameLogic = (options?: {
           return ball.id >= 1 && ball.id <= 7;
         return ball.id >= 9 && ball.id <= 15;
       };
+      const correctBallsPocketedThisTurn = pocketedBalls.filter(
+        (b) => b.id !== 8 && isCorrectBall(b),
+      );
+      const hasRemainingOwnBallsAfterShot = hasRemainingBalls(currentIndex);
+      const wasOnEightBallAtShotStart =
+        !hasRemainingOwnBallsAfterShot &&
+        correctBallsPocketedThisTurn.length === 0;
 
       if (!hit) {
         shouldChangeTurn = true;
@@ -795,7 +802,7 @@ export const useTwoPlayerGameLogic = (options?: {
         newPlayers[currentIndex].score += 50;
         messageText = `🏆 ${currentPlayer.name} CHIẾN THẮNG!`;
         debugLog("[DETERMINED] Vô bi 8 → thắng");
-      } else if (!hasRemainingBalls(currentIndex)) {
+      } else if (wasOnEightBallAtShotStart) {
         if (hit.id !== 8) {
           shouldChangeTurn = true;
           givesBallInHand = true;
@@ -812,9 +819,7 @@ export const useTwoPlayerGameLogic = (options?: {
         messageText = "❌ Chạm sai bi! Đối thủ có ball in hand";
         debugLog("[DETERMINED] Chạm sai loại bi");
       } else if (pocketedBalls.length > 0) {
-        const correctBalls = pocketedBalls.filter(
-          (b) => b.id !== 8 && isCorrectBall(b),
-        );
+        const correctBalls = correctBallsPocketedThisTurn;
 
         if (correctBalls.length > 0) {
           newPlayers[currentIndex].score +=
@@ -915,7 +920,7 @@ export const useTwoPlayerGameLogic = (options?: {
     pushOutDecisionPendingRef.current = null;
   };
 
-  const setCueBallPosition = (x: number, y: number) => {
+  const setCueBallPosition = (x: number, y: number, markPlaced = false) => {
     setBalls((prev) => {
       const next = [...prev];
       next[0].x = x;
@@ -925,6 +930,11 @@ export const useTwoPlayerGameLogic = (options?: {
       next[0].isPocketed = false;
       return next;
     });
+
+    if (markPlaced && ballInHandRef.current) {
+      setBallInHandPlaced(true);
+      ballInHandPlacedRef.current = true;
+    }
   };
 
   const getStateSnapshot = (): SerializedGameState => ({
@@ -1265,3 +1275,4 @@ export const useTwoPlayerGameLogic = (options?: {
     setCueBallPosition,
   };
 };
+
